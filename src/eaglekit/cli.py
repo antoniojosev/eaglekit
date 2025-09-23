@@ -199,22 +199,140 @@ def _first_run_needed() -> bool:
     return not d.get("first_run_done", False)
 
 def _wizard() -> None:
-    console.print(Panel("Bienvenido a Eagle Kit\n\n1) Tu nombre de usuario.\n2) Cómo ignorar .eagle/ en Git.\n\nPuedes cambiar todo luego con ek setup o ek ignore ...", title="First-run"))
+    # ASCII Art Logo
+    logo = """
+    ███████╗ █████╗  ██████╗ ██╗     ███████╗    ██╗  ██╗██╗████████╗
+    ██╔════╝██╔══██╗██╔════╝ ██║     ██╔════╝    ██║ ██╔╝██║╚══██╔══╝
+    █████╗  ███████║██║  ███╗██║     █████╗      █████╔╝ ██║   ██║   
+    ██╔══╝  ██╔══██║██║   ██║██║     ██╔══╝      ██╔═██╗ ██║   ██║   
+    ███████╗██║  ██║╚██████╔╝███████╗███████╗    ██║  ██╗██║   ██║   
+    ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚══════╝    ╚═╝  ╚═╝╚═╝   ╚═╝   
+                          
+                    🦅 Development Project Manager 🦅
+    """
+    
+    console.print(f"[bold cyan]{logo}[/]")
+    console.print(Panel(
+        "[bold green]¡Bienvenido a Eagle Kit![/]\n\n"
+        "Eagle Kit te ayuda a gestionar proyectos de desarrollo con:\n"
+        "• [blue]Registro de proyectos[/] y organización de workspaces\n"
+        "• [blue]Gestión de tareas[/] y automatización\n"
+        "• [blue]Integración con Git[/] y manejo de directorios .eagle/\n"
+        "• [blue]Sistema de plugins[/] extensible\n\n"
+        "[yellow]Vamos a configurar Eagle Kit para tu flujo de trabajo...[/]",
+        title="🚀 Eagle Kit Setup",
+        border_style="bold green",
+        padding=(1, 2)
+    ))
+    
     d = _load_defaults()
-    uname = Prompt.ask("Tu nombre de usuario", default=str(d.get("user", {}).get("name", os.getenv("USER", "dev"))))
+    
+    # 1. Configuración de usuario
+    console.print("\n[bold blue]📝 Configuración de Usuario[/]")
+    console.print("─" * 50)
+    
+    default_name = d.get("user", {}).get("name", os.getenv("USER", "dev"))
+    uname = Prompt.ask(
+        "[green]¿Cuál es tu nombre de usuario?[/]",
+        default=str(default_name),
+        show_default=True
+    )
     d.setdefault("user", {})["name"] = uname
-    console.print(Panel(".eagle/ contiene metadatos locales.\nOpciones: local (recomendado), global, repo, none.", title="Ignorar .eagle/ en Git"))
-    choice = Prompt.ask("Política por defecto", choices=["local","global","repo","none"], default=str(d.get("preferences", {}).get("ignore_policy", "local")))
+    console.print(f"[dim]✓ Usuario configurado como: {uname}[/]")
+    
+    # 2. Configuración de política de ignore
+    console.print("\n[bold blue]📁 Configuración de .eagle/ en Git[/]")
+    console.print("─" * 50)
+    
+    console.print(Panel(
+        "[bold yellow]Eagle Kit crea directorios .eagle/ para metadatos del proyecto.[/]\n\n"
+        "[blue]local[/]   → .git/info/exclude (solo tú, no versionado) [RECOMENDADO]\n"
+        "[green]repo[/]    → .gitignore (versionado con el repositorio)\n"
+        "[cyan]global[/]  → ~/.config/git/ignore (aplica a todos tus repos)\n"
+        "[magenta]none[/]   → Sin configuración automática, control manual\n\n"
+        "[dim]La opción 'local' es recomendada porque mantiene .eagle/ ignorado\n"
+        "sin afectar a otros desarrolladores del proyecto.[/]",
+        title="🔧 Estrategias de Ignore",
+        border_style="blue"
+    ))
+    
+    choice = Prompt.ask(
+        "[green]¿Cómo quieres manejar .eagle/ en Git?[/]",
+        choices=["local", "repo", "global", "none"],
+        default=str(d.get("preferences", {}).get("ignore_policy", "local")),
+        show_choices=True,
+        show_default=True
+    )
+    
     d.setdefault("preferences", {})["ignore_policy"] = choice
+    
+    # Explicar la elección
+    explanations = {
+        "local": "✓ [green]Perfecto![/] .eagle/ será ignorado solo en tu copia local",
+        "repo": "✓ [yellow]Atención:[/] .eagle/ será ignorado para todos los colaboradores",
+        "global": "✓ [blue]Configurado![/] .eagle/ será ignorado en todos tus repositorios",
+        "none": "✓ [magenta]Entendido![/] Tendrás control total sobre el ignore"
+    }
+    console.print(f"[dim]{explanations[choice]}[/]")
+    
+    # 3. Configuraciones adicionales (futuras expansiones)
+    console.print("\n[bold blue]⚙️  Configuraciones Adicionales[/]")
+    console.print("─" * 50)
+    
+    # Editor preferido (opcional)
+    default_editor = d.get("preferences", {}).get("editor", os.getenv("EDITOR", ""))
+    if default_editor:
+        keep_editor = Prompt.ask(
+            f"[green]¿Mantener editor por defecto '{default_editor}'?[/]",
+            choices=["y", "n"],
+            default="y"
+        )
+        if keep_editor == "n":
+            editor = Prompt.ask("[green]¿Cuál es tu editor preferido?[/]", default="code")
+            d.setdefault("preferences", {})["editor"] = editor
+        else:
+            d.setdefault("preferences", {})["editor"] = default_editor
+    else:
+        editor = Prompt.ask(
+            "[green]¿Cuál es tu editor preferido?[/] [dim](opcional)[/]",
+            default="",
+            show_default=False
+        )
+        if editor:
+            d.setdefault("preferences", {})["editor"] = editor
+    
+    # 4. Finalización
     d["first_run_done"] = True
+    d["setup_version"] = "1.0"
+    d["setup_date"] = str(Path.cwd())  # Placeholder for setup tracking
     _save_defaults(d)
-    console.print(f"Listo — user.name = {uname}, ignore_policy = {choice}.")
+    
+    # Resumen final
+    console.print("\n" + "=" * 60)
+    console.print(Panel(
+        f"[bold green]🎉 ¡Configuración completada![/]\n\n"
+        f"[blue]Usuario:[/] {uname}\n"
+        f"[blue]Política de ignore:[/] {choice}\n" +
+        (f"[blue]Editor:[/] {d.get('preferences', {}).get('editor', 'No configurado')}\n" if d.get('preferences', {}).get('editor') else "") +
+        f"\n[yellow]Próximos pasos:[/]\n"
+        f"• [dim]ek add .[/] - Registrar el directorio actual como proyecto\n"
+        f"• [dim]ek list[/] - Ver todos tus proyectos\n"
+        f"• [dim]ek run list[/] - Ver tareas disponibles\n"
+        f"• [dim]ek ignore {choice}[/] - Aplicar política de ignore\n" +
+        (f"• [dim]ek ignore status[/] - Ver estado actual de ignore\n" if choice != "none" else "") +
+        f"• [dim]ek --help[/] - Ver todos los comandos disponibles\n\n"
+        f"[green]¡Eagle Kit está listo para usar! 🚀[/]",
+        title="✅ Setup Completo",
+        border_style="bold green",
+        padding=(1, 2)
+    ))
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context):
     if _first_run_needed() and (not ctx.invoked_subcommand):
         _wizard()
-        console.print("\nEscribe ek --help para ver los comandos.")
+        console.print("\n[bold blue]🎯 ¡Listo para empezar![/]")
+        console.print("[dim]Escribe [bold]ek --help[/] para ver todos los comandos disponibles.[/]")
         raise typer.Exit(0)
 
 @app.command("setup")
@@ -347,6 +465,17 @@ def ignore_local():
 def ignore_global():
     changed = _apply_global_ignore()
     console.print("Añadido .eagle/ al exclude global" if changed else "El exclude global ya lo contiene")
+
+@ignore_app.command("none")
+def ignore_none():
+    """Configure no automatic ignore for .eagle/ directories.
+    
+    Choose this option if you want to manually handle .eagle/ 
+    directory inclusion/exclusion in Git. Eagle Kit will not
+    automatically modify any ignore files.
+    """
+    console.print("✓ [magenta]Configurado:[/] Eagle Kit no modificará archivos de ignore automáticamente")
+    console.print("[dim]Puedes usar 'ek ignore status' para verificar el estado actual[/]")
 
 # ---------- Tasks (run) ----------
 run_app = typer.Typer(
