@@ -155,6 +155,21 @@ def _project_from_name_or_cwd(name: Optional[str], ws: Optional[str]) -> Project
     console.print("[red]No project matched the current directory.[/] Use -n/--name or --ws, or run inside a registered project.")
     raise typer.Exit(1)
 
+def _resolve_project_path(project_name: str, ws: Optional[str] = None) -> Optional[Path]:
+    """Resolve a project name to its absolute path.
+    
+    Returns None if project doesn't exist.
+    """
+    try:
+        reg = _reg()
+        wsname = _cur_ws(reg, ws)
+        pr = _projects(reg, wsname).get(project_name)
+        if pr:
+            return Path(pr["path"]).expanduser().resolve()
+        return None
+    except Exception:
+        return None
+
 def _git_root(path: Path) -> Optional[Path]:
     res = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     if res.returncode == 0:
@@ -777,6 +792,89 @@ def status():
     table.add_row("Workspace", ws)
     table.add_row("Path", str(pr.path))
     console.print(table)
+
+@app.command("cd")
+def cd_project(
+    project_name: Optional[str] = typer.Argument(None, help="Name of the project to navigate to"),
+    path_only: bool = typer.Option(False, "--path", help="Output only the project path for scripting"),
+    workspace: Optional[str] = typer.Option(None, "--ws", help="Workspace name"),
+):
+    """Navigate to a registered project directory.
+
+    Jump to any registered project by name. Outputs the cd command
+    for you to copy or use in shell functions/scripts.
+
+    Examples:
+      ek cd api                  # Show cd command for 'api' project
+      ek cd                      # List all available projects
+      ek cd web --path           # Output only the path for 'web' project
+
+    Since Eagle Kit can't change your shell's directory directly,
+    this command shows you the path or cd command to use.
+
+    For quick navigation, create a shell function:
+      alias ecd='cd "$(ek cd --path "$1")"'
+      ecd api                    # Quick navigate to 'api' project
+    """
+    if not project_name:
+        # Show list of available projects
+        reg = _reg()
+        ws = _cur_ws(reg, workspace)
+        projects = _projects(reg, ws)
+        
+        if not projects:
+            console.print(f"[yellow]No projects registered in workspace '{ws}'[/]")
+            console.print("[dim]Use 'ek add .' to register the current directory[/]")
+            return
+        
+        console.print(f"[bold blue]📁 Available projects in workspace '{ws}':[/]")
+        table = Table()
+        table.add_column("Name", style="bold cyan")
+        table.add_column("Path", style="dim")
+        
+        for name, meta in sorted(projects.items()):
+            table.add_row(name, meta["path"])
+        
+        console.print(table)
+        console.print(f"\n[dim]Use: ek cd <project-name> to navigate[/]")
+        return
+    
+    # Resolve project path
+    project_path = _resolve_project_path(project_name, workspace)
+    
+    if not project_path:
+        reg = _reg()
+        ws = _cur_ws(reg, workspace)
+        available = list(_projects(reg, ws).keys())
+        
+        console.print(f"[red]❌ Project '{project_name}' not found in workspace '{ws}'[/]")
+        if available:
+            console.print(f"[dim]Available projects: {', '.join(sorted(available))}[/]")
+        else:
+            console.print("[dim]No projects registered. Use 'ek add .' to register current directory[/]")
+        raise typer.Exit(1)
+    
+    if path_only:
+        # Just output the path for scripting
+        console.print(str(project_path))
+        return
+    
+    # Show friendly navigation info
+    cd_command = f"cd {project_path}"
+    console.print(f"[bold green]📁 {project_name}[/] → [cyan]{project_path}[/]")
+    console.print(f"[dim]Run:[/] [bold]{cd_command}[/]")
+    
+    # Try to copy to clipboard if possible
+    try:
+        import subprocess
+        if subprocess.run(["which", "xclip"], capture_output=True).returncode == 0:
+            subprocess.run(["xclip", "-selection", "clipboard"], input=cd_command.encode())
+            console.print("📋 [dim]Command copied to clipboard[/]")
+        elif subprocess.run(["which", "pbcopy"], capture_output=True).returncode == 0:
+            subprocess.run(["pbcopy"], input=cd_command.encode())
+            console.print("📋 [dim]Command copied to clipboard[/]")
+    except:
+        pass
 
 @app.command("plugins")
 def plugins():
