@@ -21,8 +21,12 @@ app = typer.Typer(help="Eagle Kit — dev project manager CLI.", add_completion=
 console = Console()
 
 # ---------- Plugin system ----------
+_loaded_plugins = []
+_failed_plugins = []
+
 def _load_plugins():
     """Load plugins from entry points"""
+    global _loaded_plugins, _failed_plugins
     try:
         from importlib.metadata import entry_points
         eps = entry_points()
@@ -37,14 +41,43 @@ def _load_plugins():
             try:
                 register_func = ep.load()
                 register_func(app)
+                _loaded_plugins.append({
+                    'name': ep.name,
+                    'module': ep.value,
+                    'status': 'loaded'
+                })
                 console.print(f"[dim]Loaded plugin: {ep.name}[/]")
             except Exception as e:
+                _failed_plugins.append({
+                    'name': ep.name,
+                    'module': ep.value,
+                    'status': 'failed',
+                    'error': str(e)
+                })
                 console.print(f"[yellow]Warning: Failed to load plugin {ep.name}: {e}[/]")
     except ImportError:
         # No importlib.metadata available
         pass
     except Exception as e:
         console.print(f"[yellow]Warning: Plugin loading failed: {e}[/]")
+
+def _get_available_plugins():
+    """Get all available plugins (loaded and failed)"""
+    try:
+        from importlib.metadata import entry_points
+        eps = entry_points()
+        if hasattr(eps, 'select'):
+            # Python 3.10+
+            plugin_eps = eps.select(group='eaglekit.plugins')
+        else:
+            # Python 3.9
+            plugin_eps = eps.get('eaglekit.plugins', [])
+        
+        return [{'name': ep.name, 'module': ep.value} for ep in plugin_eps]
+    except ImportError:
+        return []
+    except Exception:
+        return []
 
 # Load plugins on import
 _load_plugins()
@@ -456,3 +489,57 @@ def status():
     table.add_row("Workspace", ws)
     table.add_row("Path", str(pr.path))
     console.print(table)
+
+@app.command("plugins")
+def plugins():
+    """Show installed plugins"""
+    table = Table(title="Eagle Kit — Installed Plugins")
+    table.add_column("Plugin", style="bold")
+    table.add_column("Module")
+    table.add_column("Status", style="bold")
+    table.add_column("Error", style="red")
+    
+    # Show loaded plugins
+    for plugin in _loaded_plugins:
+        table.add_row(
+            plugin['name'],
+            plugin['module'], 
+            "[green]✓ Loaded[/]",
+            ""
+        )
+    
+    # Show failed plugins
+    for plugin in _failed_plugins:
+        table.add_row(
+            plugin['name'],
+            plugin['module'],
+            "[red]✗ Failed[/]", 
+            plugin['error']
+        )
+    
+    # Show plugins that weren't found during loading
+    available = _get_available_plugins()
+    loaded_names = {p['name'] for p in _loaded_plugins}
+    failed_names = {p['name'] for p in _failed_plugins}
+    
+    for plugin in available:
+        if plugin['name'] not in loaded_names and plugin['name'] not in failed_names:
+            table.add_row(
+                plugin['name'],
+                plugin['module'],
+                "[yellow]◐ Available[/]",
+                "Not loaded during startup"
+            )
+    
+    if not available:
+        console.print("[yellow]No plugins found. Install plugins with entry point 'eaglekit.plugins'[/]")
+        return
+        
+    console.print(table)
+    
+    # Show summary
+    loaded_count = len(_loaded_plugins)
+    failed_count = len(_failed_plugins)
+    total_count = len(available)
+    
+    console.print(f"\n[green]Loaded:[/] {loaded_count}, [red]Failed:[/] {failed_count}, [blue]Total available:[/] {total_count}")

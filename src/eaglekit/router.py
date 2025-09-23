@@ -5,7 +5,7 @@ import sys, subprocess
 KNOWN = {
   "add","init","list","remove","open","where",
   "todo","git","ws","run","notes","sync","status","cd","secrets",
-  "setup","ignore","help","--help","-h","hooks"
+  "setup","ignore","help","--help","-h","hooks","plugins"
 }
 
 def main():
