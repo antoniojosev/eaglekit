@@ -3,9 +3,13 @@ from __future__ import annotations
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.prompt import Prompt
+from rich.panel import Panel
 from typing import Optional, Dict, Any
 from pathlib import Path
-from .config import load_registry, save_registry
+import yaml
+import os
+from .config import load_registry, save_registry, get_paths
 from .core import Project
 
 app = typer.Typer(help="Eagle Kit — dev project manager CLI.", add_completion=False)
@@ -35,6 +39,48 @@ def _project_by_cwd(reg: Dict[str, Any], wsname: str, cwd: Path | None = None) -
         except Exception:
             continue
     return best
+
+# ---------- Setup wizard ----------
+def _defaults_path() -> Path:
+    return get_paths().defaults_file
+
+def _load_defaults() -> Dict[str, Any]:
+    p = _defaults_path()
+    if not p.exists():
+        return {}
+    try:
+        return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+def _save_defaults(cfg: Dict[str, Any]) -> None:
+    _defaults_path().parent.mkdir(parents=True, exist_ok=True)
+    _defaults_path().write_text(yaml.safe_dump(cfg, sort_keys=True), encoding="utf-8")
+
+def _first_run_needed() -> bool:
+    d = _load_defaults()
+    return not d.get("first_run_done", False)
+
+def _wizard() -> None:
+    console.print(Panel("Welcome to Eagle Kit!\n\n1) Your username\n2) Git ignore preferences\n\nYou can change these later with 'ek setup'.", title="First-run Setup"))
+    d = _load_defaults()
+    uname = Prompt.ask("Your username", default=str(d.get("user", {}).get("name", os.getenv("USER", "dev"))))
+    d.setdefault("user", {})["name"] = uname
+    d["first_run_done"] = True
+    _save_defaults(d)
+    console.print(f"Setup complete — user.name = {uname}")
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context):
+    if _first_run_needed() and (not ctx.invoked_subcommand):
+        _wizard()
+        console.print("\nType 'ek --help' to see available commands.")
+        raise typer.Exit(0)
+
+@app.command("setup")
+def setup():
+    """Run the setup wizard"""
+    _wizard()
 
 @app.command()
 def hello():
