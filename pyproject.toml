@@ -19,11 +19,14 @@ dependencies = [
 ]
 
 [project.scripts]
-ek = "eaglekit.router:main"
+ek = "eaglekit.wrapper:main"
 ek-core = "eaglekit.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/eaglekit"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/eaglekit/ek_wrapper.sh" = "eaglekit/ek_wrapper.sh"
 
 [tool.ruff]
 line-length = 100

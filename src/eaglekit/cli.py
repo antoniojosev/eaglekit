@@ -170,6 +170,80 @@ def _resolve_project_path(project_name: str, ws: Optional[str] = None) -> Option
     except Exception:
         return None
 
+def _clean_variable_name(name: str) -> str:
+    """Clean project name to be a valid shell variable name."""
+    import re
+    # Replace non-alphanumeric chars with underscore, ensure starts with letter
+    clean = re.sub(r'[^a-zA-Z0-9_]', '_', name)
+    clean = re.sub(r'^[0-9]', '_', clean)  # Can't start with number
+    return clean
+
+def _generate_project_variables(ws: Optional[str] = None) -> None:
+    """Generate shell variables file for all registered projects."""
+    reg = _reg()
+    wsname = _cur_ws(reg, ws)
+    projects = _projects(reg, wsname)
+    
+    if not projects:
+        # If no projects, create empty file
+        vars_file = Path.home() / '.eagle_projects'
+        vars_file.write_text("# Eagle Kit project variables\n# No projects registered yet\n")
+        return
+    
+    # Generate variables
+    lines = ["# Eagle Kit project variables"]
+    lines.append("# Auto-generated - do not edit manually")
+    lines.append("")
+    
+    for name, meta in sorted(projects.items()):
+        path = Path(meta["path"]).expanduser().resolve()
+        var_name = _clean_variable_name(name)
+        
+        # Export variable without prefix
+        lines.append(f'export {var_name}="{path}"')
+    
+    lines.append("")
+    lines.append("# Usage: cd $project_name")
+    
+    # Write to file
+    vars_file = Path.home() / '.eagle_projects'
+    vars_file.write_text('\n'.join(lines) + '\n')
+    
+    console.print(f"[dim]✓ Variables updated: {len(projects)} projects in {vars_file}[/]")
+
+def _generate_ekadd_function() -> str:
+    """Generate ekadd helper function code."""
+    return '''
+# Eagle Kit helper function - auto-add with variable loading
+ekadd() {
+    ek add "$@"
+    if [ $? -eq 0 ]; then
+        source ~/.eagle_projects
+        echo "✓ Variables recargadas automáticamente"
+        
+        # Extract project name for hint
+        local proj_name=""
+        local args=("$@")
+        
+        # Look for --name parameter
+        for ((i=0; i<${#args[@]}; i++)); do
+            if [[ "${args[i]}" == "--name" ]] || [[ "${args[i]}" == "-n" ]]; then
+                proj_name="${args[i+1]}"
+                break
+            fi
+        done
+        
+        # If no --name, use directory name
+        if [ -z "$proj_name" ]; then
+            proj_name=$(basename "$(realpath "${args[0]:-$(pwd)}")")
+        fi
+        
+        # Clean name for shell variable
+        local clean_name=$(echo "$proj_name" | sed 's/[^a-zA-Z0-9_]/_/g' | sed 's/^[0-9]/_&/')
+        echo "💡 Usa: cd \\$${clean_name}"
+    fi
+}'''.strip()
+
 def _git_root(path: Path) -> Optional[Path]:
     res = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     if res.returncode == 0:
@@ -316,11 +390,152 @@ def _wizard() -> None:
         if editor:
             d.setdefault("preferences", {})["editor"] = editor
     
+    # Variables de shell automáticas
+    console.print("\n[bold blue]🔗 Variables de Shell[/]")
+    console.print("─" * 50)
+    
+    console.print(Panel(
+        "[bold yellow]¿Habilitar variables automáticas de proyecto?[/]\n\n"
+        "[green]✓[/] [bold]cd $proyecto[/] → navega a cualquier proyecto registrado\n"
+        "[blue]•[/] Se crean automáticamente al agregar proyectos\n"
+        "[blue]•[/] Formato: export proyecto=\"/path/to/proyecto\"\n"
+        "[blue]•[/] Requiere agregar source ~/.eagle_projects a tu shell\n\n"
+        "[dim]Ejemplo: ek add . --name api → después cd $api funciona[/]",
+        title="🔧 Project Variables",
+        border_style="green"
+    ))
+    
+    enable_vars = Prompt.ask(
+        "[green]¿Habilitar variables automáticas?[/]",
+        choices=["y", "n"],
+        default="y",
+        show_choices=True,
+        show_default=True
+    )
+    
+    if enable_vars == "y":
+        d.setdefault("preferences", {})["shell_variables"] = True
+        console.print("[dim]✓ Variables automáticas habilitadas[/]")
+        
+        # Auto-setup sourcing
+        shell = os.environ.get('SHELL', '/bin/bash')
+        if 'zsh' in shell:
+            rc_file = Path.home() / '.zshrc'
+        else:
+            rc_file = Path.home() / '.bashrc'
+            
+        source_line = "source ~/.eagle_projects"
+        
+        # Check if already configured
+        if rc_file.exists() and source_line in rc_file.read_text():
+            console.print("[dim]✓ Auto-sourcing ya configurado[/]")
+        else:
+            # Add sourcing line
+            with open(rc_file, 'a') as f:
+                f.write(f"\n# Eagle Kit project variables\n{source_line}\n")
+            console.print(f"[dim]✓ Auto-sourcing agregado a {rc_file.name}[/]")
+        
+        # Offer ekadd helper function
+        console.print("\n[bold blue]🔧 Función Helper ekadd[/]")
+        console.print("─" * 30)
+        
+        console.print(Panel(
+            "[bold yellow]¿Instalar función helper ekadd?[/]\n\n"
+            "[green]ekadd[/] → Agregar proyectos [blue]y cargar variables automáticamente[/]\n"
+            "[blue]•[/] Combina 'ek add' + 'source ~/.eagle_projects'\n"
+            "[blue]•[/] Te muestra el comando cd inmediatamente\n"
+            "[blue]•[/] Sin configuración manual adicional\n\n"
+            "[dim]Ejemplo: ekadd . --name api → auto-carga $api inmediatamente[/]",
+            title="🚀 Helper Function",
+            border_style="blue"
+        ))
+        
+        install_ekadd = Prompt.ask(
+            "[green]¿Instalar función ekadd?[/]",
+            choices=["y", "n"],
+            default="y",
+            show_choices=True,
+            show_default=True
+        )
+        
+        if install_ekadd == "y":
+            try:
+                # Use the existing install_ekadd function
+                _generate_project_variables()
+                ekadd_function = _generate_ekadd_function()
+                
+                # Add function to config
+                if rc_file.exists():
+                    content = rc_file.read_text()
+                    if 'ekadd()' not in content:
+                        content += '\n# Eagle Kit ekadd helper function\n'
+                        content += ekadd_function + '\n'
+                        rc_file.write_text(content)
+                        console.print("[dim]✓ Función ekadd instalada[/]")
+                    else:
+                        console.print("[dim]✓ Función ekadd ya existe[/]")
+                else:
+                    with open(rc_file, 'w') as f:
+                        f.write(f"# Eagle Kit ekadd helper function\n{ekadd_function}\n")
+                    console.print(f"[dim]✓ Función ekadd instalada en {rc_file.name}[/]")
+                
+                d.setdefault("preferences", {})["ekadd_helper"] = True
+            except Exception as e:
+                console.print(f"[red]Error instalando ekadd: {e}[/]")
+                d.setdefault("preferences", {})["ekadd_helper"] = False
+        else:
+            d.setdefault("preferences", {})["ekadd_helper"] = False
+            console.print("[dim]✓ Función ekadd no instalada[/]")
+            
+    else:
+        d.setdefault("preferences", {})["shell_variables"] = False
+        console.print("[dim]✓ Variables automáticas deshabilitadas[/]")
+
+    # Navegación directa con shell function
+    console.print("\n[bold blue]🚀 Navegación Directa[/]")
+    console.print("─" * 50)
+    
+    console.print(Panel(
+        "[bold yellow]¿Habilitar navegación directa con 'ek cd proyecto'?[/]\n\n"
+        "[green]✓[/] [bold]ek cd proyecto[/] → te mueve directamente al directorio\n"
+        "[blue]•[/] Requiere instalar función en tu ~/.zshrc o ~/.bashrc\n"
+        "[blue]•[/] Todos los otros comandos funcionan igual\n"
+        "[blue]•[/] Puedes deshabilitarlo después con 'ek shell uninstall'\n\n"
+        "[dim]Recomendado para máxima productividad[/]",
+        title="🔧 Shell Integration",
+        border_style="cyan"
+    ))
+    
+    enable_nav = Prompt.ask(
+        "[green]¿Habilitar navegación directa?[/]",
+        choices=["y", "n"],
+        default="y",
+        show_choices=True,
+        show_default=True
+    )
+    
+    if enable_nav == "y":
+        d.setdefault("preferences", {})["shell_integration"] = True
+        console.print("[dim]✓ Se habilitará navegación directa[/]")
+    else:
+        d.setdefault("preferences", {})["shell_integration"] = False
+        console.print("[dim]✓ Navegación directa deshabilitada[/]")
+
     # 4. Finalización
     d["first_run_done"] = True
     d["setup_version"] = "1.0"
     d["setup_date"] = str(Path.cwd())  # Placeholder for setup tracking
     _save_defaults(d)
+    
+    # Instalar shell integration si fue habilitada
+    if d.get("preferences", {}).get("shell_integration"):
+        try:
+            shell_install()
+            shell_installed = True
+        except:
+            shell_installed = False
+    else:
+        shell_installed = False
     
     # Resumen final
     console.print("\n" + "=" * 60)
@@ -329,13 +544,16 @@ def _wizard() -> None:
         f"[blue]Usuario:[/] {uname}\n"
         f"[blue]Política de ignore:[/] {choice}\n" +
         (f"[blue]Editor:[/] {d.get('preferences', {}).get('editor', 'No configurado')}\n" if d.get('preferences', {}).get('editor') else "") +
+        (f"[blue]Navegación directa:[/] {'✓ Habilitada' if shell_installed else '✗ Error en instalación'}\n" if d.get('preferences', {}).get('shell_integration') else "") +
         f"\n[yellow]Próximos pasos:[/]\n"
         f"• [dim]ek add .[/] - Registrar el directorio actual como proyecto\n"
         f"• [dim]ek list[/] - Ver todos tus proyectos\n"
-        f"• [dim]ek run list[/] - Ver tareas disponibles\n"
+        f"• [dim]ek run list[/] - Ver tareas disponibles\n" +
+        (f"• [dim]ek cd proyecto[/] - Navegar directamente a un proyecto\n" if shell_installed else "") +
         f"• [dim]ek ignore {choice}[/] - Aplicar política de ignore\n" +
         (f"• [dim]ek ignore status[/] - Ver estado actual de ignore\n" if choice != "none" else "") +
-        f"• [dim]ek --help[/] - Ver todos los comandos disponibles\n\n"
+        f"• [dim]ek --help[/] - Ver todos los comandos disponibles\n\n" +
+        (f"[cyan]💡 Reinicia tu terminal para habilitar 'ek cd proyecto'[/]\n\n" if shell_installed else "") +
         f"[green]¡Eagle Kit está listo para usar! 🚀[/]",
         title="✅ Setup Completo",
         border_style="bold green",
@@ -491,6 +709,263 @@ def ignore_none():
     """
     console.print("✓ [magenta]Configurado:[/] Eagle Kit no modificará archivos de ignore automáticamente")
     console.print("[dim]Puedes usar 'ek ignore status' para verificar el estado actual[/]")
+
+# ---------- Shell Integration ----------
+shell_app = typer.Typer(
+    help="""Shell integration for direct navigation.
+
+Configure shell functions to enable direct navigation with 'ek cd project'.
+The shell integration allows you to navigate directly to registered projects
+without needing to copy/paste commands.
+
+Examples:
+  ek shell install              # Install shell function
+  ek shell uninstall            # Remove shell function  
+  ek shell status               # Check integration status
+  ek shell function             # Show function code
+
+After installation: 'ek cd project' will navigate directly to the project.
+""",
+    rich_markup_mode="rich"
+)
+app.add_typer(shell_app, name="shell")
+
+@shell_app.command("install")
+def shell_install():
+    """Install Eagle Kit shell function for direct navigation.
+    
+    Adds a shell function to your ~/.zshrc or ~/.bashrc that enables
+    direct navigation with 'ek cd project'. The function intercepts
+    'ek cd' commands and navigates directly while preserving all
+    other Eagle Kit functionality.
+    """
+    import subprocess
+    
+    # Detect shell
+    shell = os.environ.get('SHELL', '/bin/bash')
+    if 'zsh' in shell:
+        rc_file = Path.home() / '.zshrc'
+    else:
+        rc_file = Path.home() / '.bashrc'
+    
+    # Get shell function
+    function_code = subprocess.run([
+        sys.executable, "-c", 
+        "from eaglekit.wrapper import generate_shell_function; print(generate_shell_function())"
+    ], capture_output=True, text=True)
+    
+    if function_code.returncode != 0:
+        console.print("[red]Error getting shell function[/]")
+        raise typer.Exit(1)
+    
+    function = function_code.stdout.strip()
+    marker_start = "# Eagle Kit shell integration - START"
+    marker_end = "# Eagle Kit shell integration - END"
+    
+    # Check if already installed
+    if rc_file.exists():
+        content = rc_file.read_text()
+        if marker_start in content:
+            console.print("[yellow]Shell integration already installed[/]")
+            console.print(f"[dim]Found in: {rc_file}[/]")
+            return
+    
+    # Add function to rc file
+    integration_block = f"\n{marker_start}\n{function}\n{marker_end}\n"
+    
+    with open(rc_file, 'a') as f:
+        f.write(integration_block)
+    
+    console.print(f"[green]✓ Shell integration installed in {rc_file}[/]")
+    console.print("[dim]Restart your shell or run: source ~/.zshrc[/]")
+    console.print("[bold]Now you can use: ek cd project[/]")
+
+@shell_app.command("uninstall") 
+def shell_uninstall():
+    """Remove Eagle Kit shell integration."""
+    shell = os.environ.get('SHELL', '/bin/bash')
+    rc_file = Path.home() / ('.zshrc' if 'zsh' in shell else '.bashrc')
+    
+    if not rc_file.exists():
+        console.print("[yellow]No shell config file found[/]")
+        return
+    
+    content = rc_file.read_text()
+    marker_start = "# Eagle Kit shell integration - START"
+    marker_end = "# Eagle Kit shell integration - END"
+    
+    if marker_start not in content:
+        console.print("[yellow]Shell integration not found[/]")
+        return
+    
+    # Remove integration block
+    lines = content.split('\n')
+    new_lines = []
+    skip = False
+    
+    for line in lines:
+        if marker_start in line:
+            skip = True
+            continue
+        if marker_end in line:
+            skip = False
+            continue
+        if not skip:
+            new_lines.append(line)
+    
+    rc_file.write_text('\n'.join(new_lines))
+    console.print(f"[green]✓ Shell integration removed from {rc_file}[/]")
+    console.print("[dim]Restart your shell for changes to take effect[/]")
+
+@shell_app.command("status")
+def shell_status():
+    """Check shell integration status."""
+    shell = os.environ.get('SHELL', '/bin/bash')
+    rc_file = Path.home() / ('.zshrc' if 'zsh' in shell else '.bashrc')
+    
+    console.print(f"[blue]Shell:[/] {shell}")
+    console.print(f"[blue]Config file:[/] {rc_file}")
+    
+    if rc_file.exists():
+        content = rc_file.read_text()
+        installed = "# Eagle Kit shell integration - START" in content
+        status = "[green]✓ Installed[/]" if installed else "[yellow]✗ Not installed[/]"
+        console.print(f"[blue]Integration:[/] {status}")
+    else:
+        console.print(f"[blue]Integration:[/] [red]✗ Config file not found[/]")
+
+@shell_app.command("function")
+def shell_function():
+    """Show the shell function code."""
+    import subprocess
+    
+    result = subprocess.run([
+        sys.executable, "-c", 
+        "from eaglekit.wrapper import generate_shell_function; print(generate_shell_function())"
+    ], capture_output=True, text=True)
+    
+    if result.returncode == 0:
+        console.print("[bold]Eagle Kit Shell Function:[/]")
+        console.print(result.stdout.strip())
+    else:
+        console.print("[red]Error getting shell function[/]")
+
+@shell_app.command("install-ekadd", help="Install ekadd helper function for automatic variable loading")
+def install_ekadd():
+    """Install ekadd helper function in shell."""
+    # Generate shell files
+    _generate_project_variables()
+    ekadd_function = _generate_ekadd_function()
+    
+    # Determine shell config file
+    shell = os.environ.get('SHELL', '/bin/bash')
+    shell_name = Path(shell).name
+    
+    if shell_name == 'zsh':
+        config_file = Path.home() / '.zshrc'
+    elif shell_name == 'bash':
+        config_file = Path.home() / '.bashrc'
+    else:
+        config_file = Path.home() / '.profile'
+    
+    console.print(f"[bold blue]Installing ekadd function...[/]")
+    
+    # Check if already installed
+    if config_file.exists():
+        content = config_file.read_text()
+        if 'ekadd()' in content:
+            console.print("⚠️  ekadd function already exists in shell config")
+            if not typer.confirm("Replace existing ekadd function?"):
+                raise typer.Abort()
+            
+            # Remove existing function
+            lines = content.split('\n')
+            new_lines = []
+            in_ekadd = False
+            for line in lines:
+                if line.strip().startswith('ekadd()'):
+                    in_ekadd = True
+                    continue
+                elif in_ekadd and line.strip() == '}':
+                    in_ekadd = False
+                    continue
+                elif not in_ekadd:
+                    new_lines.append(line)
+            
+            content = '\n'.join(new_lines)
+    else:
+        content = ""
+    
+    # Add function to config
+    if content and not content.endswith('\n'):
+        content += '\n'
+    
+    content += '\n# Eagle Kit ekadd helper function\n'
+    content += ekadd_function + '\n'
+    
+    # Add auto-loading
+    content += '\n# Auto-load Eagle Kit project variables\n'
+    content += 'if [ -f ~/.eagle_projects ]; then\n'
+    content += '    source ~/.eagle_projects\n'
+    content += 'fi\n'
+    
+    config_file.write_text(content)
+    
+    console.print(f"✅ Function ekadd installed in {config_file}")
+    console.print("✅ Auto-loading of variables configured")
+    console.print("")
+    console.print("[bold yellow]Usage:[/]")
+    console.print("  [cyan]ekadd /path/to/project[/] - Add project and auto-load variables")
+    console.print("  [cyan]ekadd . --name myproject[/] - Add current dir with name")
+    console.print("")
+    console.print("[dim]Restart your shell or run:[/]")
+    console.print(f"  [cyan]source {config_file}[/]")
+
+@shell_app.command("vars")
+def shell_vars():
+    """Show current project variables."""
+    vars_file = Path.home() / '.eagle_projects'
+    
+    if not vars_file.exists():
+        console.print("[yellow]No project variables file found[/]")
+        console.print("[dim]Variables are generated when you add projects[/]")
+        return
+    
+    content = vars_file.read_text()
+    
+    # Parse variables
+    variables = []
+    for line in content.split('\n'):
+        if line.startswith('export '):
+            var_line = line[7:]  # Remove 'export '
+            if '=' in var_line:
+                name, path = var_line.split('=', 1)
+                path = path.strip('"')
+                variables.append((name, path))
+    
+    if not variables:
+        console.print("[yellow]No variables found in file[/]")
+        return
+    
+    console.print(f"[bold blue]📂 Project Variables ({len(variables)})[/]")
+    table = Table()
+    table.add_column("Variable", style="bold green")
+    table.add_column("Path", style="dim")
+    table.add_column("Usage", style="cyan")
+    
+    for var_name, path in variables:
+        table.add_row(var_name, path, f"cd ${var_name}")
+    
+    console.print(table)
+    console.print(f"\n[dim]File: {vars_file}[/]")
+    console.print("[dim]Usage: cd $variable_name[/]")
+
+@shell_app.command("refresh")
+def shell_refresh():
+    """Regenerate project variables file."""
+    _generate_project_variables()
+    console.print("[green]✓ Project variables refreshed[/]")
+    console.print("[dim]Run 'source ~/.eagle_projects' to reload in current shell[/]")
 
 # ---------- Tasks (run) ----------
 run_app = typer.Typer(
@@ -699,7 +1174,8 @@ def run_new(task: str,
 def add(
     path: str = typer.Argument(..., help="Path to project directory"),
     name: Optional[str] = typer.Option(None, "--name", "-n", help="Custom project name (defaults to directory name)"),
-    ws: Optional[str] = typer.Option(None, "--ws", help="Target workspace (defaults to 'default')")
+    ws: Optional[str] = typer.Option(None, "--ws", help="Target workspace (defaults to 'default')"),
+    eval_mode: bool = typer.Option(False, "--eval", help="Output shell commands for eval (advanced usage)")
 ):
     """Register a project directory in Eagle Kit.
 
@@ -726,6 +1202,14 @@ def add(
     proj_name = name or p.name
     _projects(reg, wsname)[proj_name] = {"path": str(p)}
     _save(reg)
+    
+    # Handle eval mode first (for advanced users/scripts)
+    if eval_mode:
+        var_name = _clean_variable_name(proj_name)
+        print(f'export {var_name}="{p}"')
+        print(f'echo "✓ Variable ${var_name} loaded for project {proj_name}"')
+        return
+    
     # apply ignore default if configured
     d = _load_defaults()
     policy = d.get("preferences", {}).get("ignore_policy", "none")
@@ -742,7 +1226,68 @@ def add(
             console.print(f"Applied default ignore policy ({policy})")
     except Exception:
         pass
-    console.print(f"Registered {proj_name} -> {p}")
+    
+    # ALWAYS generate shell variables automatically (this is the core feature!)
+    _generate_project_variables(ws)
+    var_name = _clean_variable_name(proj_name)
+    
+    # Auto-setup shell integration (seamless, no questions asked)
+    shell = os.environ.get('SHELL', '/bin/bash')
+    shell_name = Path(shell).name
+    
+    if shell_name == 'zsh':
+        rc_file = Path.home() / '.zshrc'
+    elif shell_name == 'bash':
+        rc_file = Path.home() / '.bashrc'
+    else:
+        rc_file = Path.home() / '.profile'
+    
+    # Check if auto-loading is already configured
+    source_line = "source ~/.eagle_projects"
+    auto_configured = False
+    
+    if rc_file.exists():
+        content = rc_file.read_text()
+        if source_line not in content:
+            # Add auto-loading to shell config automatically
+            with open(rc_file, 'a') as f:
+                f.write(f"\n# Eagle Kit project variables (auto-added)\n")
+                f.write(f"if [ -f ~/.eagle_projects ]; then\n")
+                f.write(f"    {source_line}\n")
+                f.write(f"fi\n")
+            auto_configured = True
+    else:
+        # Create shell config with auto-loading
+        with open(rc_file, 'w') as f:
+            f.write(f"# Eagle Kit project variables (auto-added)\n")
+            f.write(f"if [ -f ~/.eagle_projects ]; then\n")
+            f.write(f"    {source_line}\n")
+            f.write(f"fi\n")
+        auto_configured = True
+    
+    # Show success and navigation info
+    console.print(f"[bold green]✓[/] Project [cyan]{proj_name}[/] registered")
+    console.print(f"[dim]  Path: {p}[/]")
+    
+    if auto_configured:
+        console.print(f"[bold green]✓[/] Shell auto-loading configured in {rc_file.name}")
+        console.print("")
+        console.print(f"[bold yellow]🚀 Ready! Open a new terminal and use:[/]")
+        console.print(f"   [cyan]cd ${var_name}[/]")
+        console.print("")
+        console.print(f"[dim]Or reload now: source {rc_file}[/]")
+    else:
+        console.print("")
+        console.print(f"[bold yellow]🚀 Ready! Navigate with:[/]")
+        console.print(f"   [cyan]cd ${var_name}[/]")
+    
+    console.print(f"[dim]Alternative: [bold]ek cd {proj_name}[/][/]")
+    console.print("")
+    console.print(f"[bold yellow]� Navigation Ready![/]")
+    console.print(f"[green]1.[/] Load variables: [cyan]source ~/.eagle_projects[/]")
+    console.print(f"[green]2.[/] Navigate:      [cyan]cd ${var_name}[/]")
+    console.print("")
+    console.print(f"[dim]Alternative: [bold]ek cd {proj_name}[/][/]")
 
 @app.command("list")
 def list_projects():
@@ -942,3 +1487,162 @@ def plugins():
     total_count = len(available)
     
     console.print(f"\n[green]Loaded:[/] {loaded_count}, [red]Failed:[/] {failed_count}, [blue]Total available:[/] {total_count}")
+
+# ---------- Uninstall command ----------
+@app.command("uninstall")
+def uninstall():
+    """Completely remove Eagle Kit and all its data.
+    
+    This command will remove:
+    • All project registries and workspaces
+    • Shell variables file (~/.eagle_projects)
+    • Auto-loading configuration from shell config files
+    • Configuration directories and files
+    • The Eagle Kit application itself (via pipx)
+    
+    WARNING: This action cannot be undone!
+    
+    Examples:
+      ek uninstall                # Remove everything completely
+    
+    This is a complete removal - no need to run pipx uninstall separately.
+    """
+    console.print("[bold red]⚠️  Eagle Kit Complete Uninstall[/]")
+    console.print("")
+    console.print("This will permanently remove:")
+    console.print("• [red]All project registries and workspaces[/]")
+    console.print("• [red]Shell variables file (~/.eagle_projects)[/]")
+    console.print("• [red]Shell configuration (auto-loading from .zshrc/.bashrc)[/]")
+    console.print("• [red]All Eagle Kit configuration files[/]")
+    console.print("• [red]The Eagle Kit application itself[/]")
+    console.print("")
+    console.print("[bold yellow]This action cannot be undone![/]")
+    
+    if not typer.confirm("Are you sure you want to completely remove Eagle Kit?"):
+        console.print("[yellow]Uninstall cancelled.[/]")
+        raise typer.Exit(0)
+    
+    console.print("")
+    console.print("[bold blue]Removing Eagle Kit data...[/]")
+    
+    # Remove project variables file
+    vars_file = Path.home() / '.eagle_projects'
+    if vars_file.exists():
+        vars_file.unlink()
+        console.print("✓ Removed shell variables file")
+    
+    # Remove configuration directory
+    paths = get_paths()
+    config_dir = paths.config_dir
+    if config_dir.exists():
+        import shutil
+        shutil.rmtree(config_dir)
+        console.print("✓ Removed configuration directory")
+    
+    # Remove from shell configuration files
+    shell_files = [
+        Path.home() / '.zshrc',
+        Path.home() / '.bashrc', 
+        Path.home() / '.profile'
+    ]
+    
+    for shell_file in shell_files:
+        if shell_file.exists():
+            try:
+                content = shell_file.read_text()
+                lines = content.split('\n')
+                new_lines = []
+                skip_block = False
+                
+                for line in lines:
+                    # Skip Eagle Kit blocks
+                    if 'Eagle Kit' in line and 'auto-added' in line:
+                        skip_block = True
+                        continue
+                    elif skip_block and line.strip() == 'fi':
+                        skip_block = False
+                        continue
+                    elif skip_block:
+                        continue
+                    # Skip other Eagle Kit references
+                    elif any(keyword in line for keyword in ['eagle_projects', 'ek()', 'ek-core']):
+                        continue
+                    else:
+                        new_lines.append(line)
+                
+                # Only write if content changed
+                new_content = '\n'.join(new_lines)
+                if new_content != content:
+                    shell_file.write_text(new_content)
+                    console.print(f"✓ Cleaned {shell_file.name}")
+                    
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not clean {shell_file.name}: {e}[/]")
+    
+    console.print("")
+    console.print("[bold blue]Removing Eagle Kit application...[/]")
+    
+    # Try to uninstall via pipx
+    try:
+        result = subprocess.run(['pipx', 'uninstall', 'eaglekit'], 
+                              capture_output=True, text=True, check=False)
+        if result.returncode == 0:
+            console.print("✓ Removed Eagle Kit application via pipx")
+        else:
+            console.print(f"[yellow]Warning: Could not remove via pipx: {result.stderr}[/]")
+            console.print("[dim]You may need to run: pipx uninstall eaglekit[/]")
+    except FileNotFoundError:
+        console.print("[yellow]Warning: pipx not found - could not auto-uninstall[/]")
+        console.print("[dim]You may need to run: pipx uninstall eaglekit[/]")
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not auto-uninstall: {e}[/]")
+        console.print("[dim]You may need to run: pipx uninstall eaglekit[/]")
+    
+    # Clean PATH remnants and development environments
+    console.print("")
+    console.print("[bold blue]Cleaning development environments...[/]")
+    
+    # Look for and clean common development paths
+    dev_paths = [
+        '/home/antonio/downloads/eaglekit_v2_1/test_env',
+        Path.home() / 'downloads' / 'eaglekit_v2_1' / 'test_env',
+    ]
+    
+    for dev_path in dev_paths:
+        dev_path = Path(dev_path)
+        if dev_path.exists():
+            try:
+                import shutil
+                shutil.rmtree(dev_path)
+                console.print(f"✓ Removed development environment: {dev_path}")
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not remove {dev_path}: {e}[/]")
+    
+    # Check for ek commands in PATH and suggest cleanup
+    try:
+        which_result = subprocess.run(['which', 'ek'], capture_output=True, text=True, check=False)
+        if which_result.returncode == 0 and which_result.stdout.strip():
+            ek_path = which_result.stdout.strip()
+            console.print(f"[yellow]Note: ek command still found at: {ek_path}[/]")
+            
+            # If it's in a test_env, try to remove the parent directory
+            if 'test_env' in ek_path:
+                test_env_dir = Path(ek_path).parent.parent
+                if test_env_dir.exists() and 'test_env' in str(test_env_dir):
+                    try:
+                        import shutil
+                        shutil.rmtree(test_env_dir)
+                        console.print(f"✓ Removed test environment: {test_env_dir}")
+                    except Exception as e:
+                        console.print(f"[yellow]Warning: Could not remove {test_env_dir}: {e}[/]")
+                        console.print(f"[dim]You may need to manually remove: {test_env_dir}[/]")
+    except Exception:
+        pass  # which command might not be available
+    
+    console.print("")
+    console.print("[bold green]✅ Eagle Kit completely removed![/]")
+    console.print("")
+    console.print("[bold blue]To reload your shell:[/]")
+    console.print("  [cyan]source ~/.zshrc[/] (or restart terminal)")
+    console.print("")
+    console.print("[dim]Thank you for using Eagle Kit! 🦅[/]")
