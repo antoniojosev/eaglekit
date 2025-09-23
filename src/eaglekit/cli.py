@@ -1477,6 +1477,9 @@ def plugins():
     
     if not available:
         console.print("[yellow]No plugins found. Install plugins with entry point 'eaglekit.plugins'[/]")
+        console.print("")
+        console.print("[bold blue]Plugin Management:[/]")
+        console.print("  [cyan]ek plugin uninstall <package>[/] - Remove a plugin")
         return
         
     console.print(table)
@@ -1487,6 +1490,79 @@ def plugins():
     total_count = len(available)
     
     console.print(f"\n[green]Loaded:[/] {loaded_count}, [red]Failed:[/] {failed_count}, [blue]Total available:[/] {total_count}")
+    console.print("")
+    console.print("[bold blue]Plugin Management:[/]")
+    console.print("  [cyan]ek plugin uninstall <package>[/] - Remove a plugin")
+
+# ---------- Plugin management commands ----------
+plugin_app = typer.Typer(
+        help="""Plugin management for Eagle Kit.
+
+Uninstall and manage Eagle Kit plugins. Plugins extend
+Eagle Kit with additional commands and features.
+
+Examples:
+    ek plugin uninstall eaglekit-hooks   # Remove a plugin
+    ek plugin list                       # Show all plugins
+""",
+    rich_markup_mode="rich"
+)
+app.add_typer(plugin_app, name="plugin")
+
+@plugin_app.command("list")
+def plugin_list():
+    """List all installed plugins.
+    
+    Same as 'ek plugins' - shows detailed plugin status.
+    """
+    plugins()
+
+
+@plugin_app.command("uninstall")
+def plugin_uninstall(package: str = typer.Argument(..., help="Package name to uninstall")):
+    """Uninstall a plugin package.
+    
+    Removes a Python package that provides Eagle Kit plugins.
+    
+    Examples:
+      ek plugin uninstall eaglekit-hooks
+    """
+    console.print(f"[bold red]Uninstalling plugin package: {package}[/]")
+    
+    if not typer.confirm(f"Remove plugin package '{package}'?"):
+        console.print("[yellow]Uninstall cancelled.[/]")
+        raise typer.Exit(0)
+    
+    try:
+        import subprocess
+        result = subprocess.run([
+            sys.executable, "-m", "pip", "uninstall", package, "-y"
+        ], capture_output=True, text=True, check=False)
+        
+        if result.returncode == 0:
+            console.print(f"[green]✓ Successfully uninstalled {package}[/]")
+            # If uninstalling eaglekit-hooks, remove hooks from all projects
+            if package == "eaglekit-hooks":
+                reg = _reg()
+                for ws in reg.get("workspaces", {}):
+                    for name, meta in reg["workspaces"][ws]["projects"].items():
+                        proj_path = Path(meta["path"]).expanduser().resolve()
+                        git_hooks = proj_path / ".git" / "hooks"
+                        if git_hooks.exists():
+                            for hook_file in git_hooks.glob("eaglekit-*"):
+                                try:
+                                    hook_file.unlink()
+                                    console.print(f"[dim]Removed hook: {hook_file}")
+                                except Exception as e:
+                                    console.print(f"[yellow]Warning: Could not remove hook {hook_file}: {e}[/]")
+            console.print("")
+            console.print("[bold yellow]Note:[/] Restart Eagle Kit to see changes")
+        else:
+            console.print(f"[red]✗ Failed to uninstall {package}[/]")
+            console.print(f"[red]Error:[/] {result.stderr}")
+            
+    except Exception as e:
+        console.print(f"[red]✗ Uninstall failed: {e}[/]")
 
 # ---------- Uninstall command ----------
 @app.command("uninstall")
