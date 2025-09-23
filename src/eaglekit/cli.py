@@ -17,7 +17,33 @@ import yaml
 import os
 import sys
 
-app = typer.Typer(help="Eagle Kit — dev project manager CLI.", add_completion=False)
+app = typer.Typer(
+    help="""Eagle Kit — Development project manager CLI.
+
+Eagle Kit helps you manage multiple development projects with:
+• Project registry and workspace organization
+• Task management and automation
+• Git integration and .eagle/ directory handling
+• Extensible plugin system
+• First-run setup and configuration
+
+Examples:
+  ek add .                    # Register current directory as project
+  ek list                     # Show all registered projects
+  ek status                   # Show current project information
+  ek run list                 # List available tasks
+  ek ignore local             # Add .eagle/ to .git/info/exclude
+  ek plugins                  # Show installed plugins
+
+Get started:
+  ek setup                    # Run configuration wizard
+  ek --help                   # Show this help
+
+For command-specific help: ek COMMAND --help
+""", 
+    add_completion=False,
+    rich_markup_mode="rich"
+)
 console = Console()
 
 # ---------- Plugin system ----------
@@ -193,14 +219,61 @@ def main(ctx: typer.Context):
 
 @app.command("setup")
 def setup():
+    """Run the configuration wizard.
+
+    Interactive setup to configure Eagle Kit for first use or
+    to change existing settings. Configures:
+    • User name
+    • Default ignore policy for .eagle/ directories
+    • Other preferences
+
+    Examples:
+      ek setup                   # Run interactive configuration
+
+    This wizard runs automatically on first use of Eagle Kit.
+    """
     _wizard()
 
 # ---------- Ignore management ----------
-ignore_app = typer.Typer(help="Gestiona cómo ignorar .eagle/ en Git (repo/local/global)")
+ignore_app = typer.Typer(
+    help="""Manage .eagle/ directory in Git ignore systems.
+
+Eagle Kit creates .eagle/ directories to store project metadata.
+This command group helps you configure Git to ignore these directories
+using different strategies based on your workflow needs.
+
+Strategies:
+  local  → .git/info/exclude (personal, not versioned) [RECOMMENDED]
+  repo   → .gitignore (versioned with repository)
+  global → ~/.config/git/ignore (applies to all repos)
+  none   → manual management
+
+Examples:
+  ek ignore explain             # Learn about ignore strategies
+  ek ignore status              # Check current ignore configuration
+  ek ignore local               # Add to .git/info/exclude
+  ek ignore repo                # Add to .gitignore
+  ek ignore global              # Add to global git ignore
+
+The 'local' strategy is recommended for most users as it keeps
+.eagle/ ignored without affecting other developers.
+""",
+    rich_markup_mode="rich"
+)
 app.add_typer(ignore_app, name="ignore")
 
 @ignore_app.command("explain")
 def ignore_explain():
+    """Explain .eagle/ ignore strategies and their use cases.
+
+    Shows detailed information about each ignore strategy:
+    • local: Personal ignore via .git/info/exclude (recommended)
+    • repo: Versioned ignore via .gitignore 
+    • global: System-wide ignore via ~/.config/git/ignore
+    • none: Manual management
+
+    Helps you choose the right strategy for your workflow.
+    """
     console.print(Panel("Opciones:\nlocal -> .git/info/exclude (solo tú) [recomendado]\nglobal -> ~/.config/git/ignore\nrepo -> .gitignore (versionado)\nnone -> no tocar nada", title="Eagle Kit — Ignore .eagle/"))
 
 def _apply_repo_ignore(repo_root: Path) -> bool:
@@ -276,7 +349,33 @@ def ignore_global():
     console.print("Añadido .eagle/ al exclude global" if changed else "El exclude global ya lo contiene")
 
 # ---------- Tasks (run) ----------
-run_app = typer.Typer(help="Run and manage tasks")
+run_app = typer.Typer(
+    help="""Task management and execution system.
+
+Eagle Kit's task system lets you define, manage, and execute project tasks
+from configuration files. Tasks can be shell commands, scripts, or complex
+multi-step processes with environment variables and parameters.
+
+Task Configuration:
+  Tasks are defined in .eagle/config.yaml (project-wide) or
+  .eagle/branches/<branch>/config.yaml (branch-specific).
+
+Task Types:
+  • Shell commands: "npm run build"
+  • Command arrays: ["python", "main.py", "--verbose"]  
+  • Script tasks: {type: script, path: scripts/deploy.sh, shell: bash}
+
+Examples:
+  ek run list                    # Show available tasks
+  ek run do build                # Run 'build' task
+  ek run task test               # Run 'test' task (alternative syntax)
+  ek run new deploy --bash       # Create new bash script task
+  ek deploy                      # Direct task execution (if not a known command)
+
+Branch tasks override project tasks with the same name.
+""",
+    rich_markup_mode="rich"
+)
 app.add_typer(run_app, name="run")
 
 def _current_branch(proj: Project) -> str:
@@ -347,7 +446,23 @@ def _exec_task(proj: Project, spec, extra_args: List[str] | None):
     raise typer.Exit(1)
 
 @run_app.command("list")
-def run_list(name: Optional[str] = typer.Argument(None), ws: Optional[str] = typer.Option(None, "--ws")):
+def run_list(
+    name: Optional[str] = typer.Argument(None, help="Project name (defaults to current directory)"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name")
+):
+    """List all available tasks for a project.
+
+    Shows tasks defined in .eagle/config.yaml and branch-specific
+    configuration. Branch tasks override project tasks with same name.
+
+    Examples:
+      ek run list                # Show tasks for current project
+      ek run list myproject      # Show tasks for specific project
+      ek run list --ws production # Show tasks in production workspace
+
+    Tasks can be shell commands, script references, or command arrays.
+    Use 'ek run do TASK' or 'ek run task TASK' to execute tasks.
+    """
     reg = _reg(); wsname = _cur_ws(reg, ws)
     proj = _project_from_name_or_cwd(name, ws=wsname)
     tasks = _load_tasks_for(proj)
@@ -437,8 +552,27 @@ def run_new(task: str,
 
 # ---------- Simple project commands ----------
 @app.command()
-def add(path: str, name: Optional[str] = typer.Option(None, "--name", "-n"),
-        ws: Optional[str] = typer.Option(None, "--ws", help="Workspace (defaults to current).")):
+def add(
+    path: str = typer.Argument(..., help="Path to project directory"),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Custom project name (defaults to directory name)"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Target workspace (defaults to 'default')")
+):
+    """Register a project directory in Eagle Kit.
+
+    Adds a project to the registry for easy access and management.
+    Automatically applies configured .eagle/ ignore policy.
+
+    Examples:
+      ek add .                          # Register current directory
+      ek add ~/projects/myapp           # Register specific path
+      ek add . --name webapp            # Register with custom name
+      ek add ~/work/api --ws production # Register in 'production' workspace
+
+    The project will be available for:
+    • Task management (ek run ...)
+    • Status tracking (ek status)
+    • Git ignore management (ek ignore ...)
+    """
     p = Path(path).expanduser().resolve()
     if not p.exists():
         console.print(f"Path does not exist: {p}")
@@ -468,6 +602,18 @@ def add(path: str, name: Optional[str] = typer.Option(None, "--name", "-n"),
 
 @app.command("list")
 def list_projects():
+    """List all registered projects in current workspace.
+
+    Shows a table of all projects registered in Eagle Kit with their
+    names and absolute paths. Helps you see what projects are available
+    for task management and other operations.
+
+    Examples:
+      ek list                    # Show all projects in default workspace
+
+    Use 'ek add' to register new projects.
+    Use 'ek status' when inside a project to see current context.
+    """
     reg = _reg()
     cur = reg.get("current_workspace", "default")
     table = Table(title=f"Projects (ws: {cur})")
@@ -478,6 +624,19 @@ def list_projects():
 
 @app.command("status")
 def status():
+    """Show current project information and context.
+
+    Displays information about the current project based on your
+    working directory. Shows workspace, project name, and path.
+
+    Examples:
+      ek status                  # Show current project info
+      cd ~/myproject && ek status # Show info for myproject
+
+    The current directory must be inside a registered project.
+    Use 'ek add .' to register the current directory first.
+    Use 'ek list' to see all registered projects.
+    """
     reg = _reg()
     ws = reg.get("current_workspace", "default")
     pr = _project_by_cwd(reg, ws)
@@ -492,7 +651,20 @@ def status():
 
 @app.command("plugins")
 def plugins():
-    """Show installed plugins"""
+    """Show installed plugins and their status.
+
+    Lists all Eagle Kit plugins with detailed information:
+    • Plugin name and module
+    • Loading status (loaded, failed, available)
+    • Error messages for failed plugins
+    • Summary statistics
+
+    Examples:
+      ek plugins                 # Show all plugins and their status
+
+    Plugins extend Eagle Kit with additional commands and features.
+    Install plugins as Python packages with 'eaglekit.plugins' entry points.
+    """
     table = Table(title="Eagle Kit — Installed Plugins")
     table.add_column("Plugin", style="bold")
     table.add_column("Module")
