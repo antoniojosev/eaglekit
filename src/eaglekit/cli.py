@@ -7,6 +7,7 @@ from rich.prompt import Prompt
 from rich.panel import Panel
 from typing import Optional, Dict, Any
 from pathlib import Path
+import subprocess
 import yaml
 import os
 from .config import load_registry, save_registry, get_paths
@@ -40,6 +41,28 @@ def _project_by_cwd(reg: Dict[str, Any], wsname: str, cwd: Path | None = None) -
             continue
     return best
 
+def _git_root(path: Path) -> Optional[Path]:
+    res = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if res.returncode == 0:
+        return Path(res.stdout.strip())
+    return None
+
+def _git_path(path: Path, what: str) -> Optional[Path]:
+    res = subprocess.run(["git", "-C", str(path), "rev-parse", "--git-path", what], capture_output=True, text=True)
+    if res.returncode == 0:
+        return Path(res.stdout.strip())
+    return None
+
+def _ensure_line(file: Path, line: str) -> bool:
+    file.parent.mkdir(parents=True, exist_ok=True)
+    if file.exists():
+        txt = file.read_text(encoding="utf-8").splitlines()
+        if any(l.strip() == line for l in txt):
+            return False
+    with file.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+    return True
+
 # ---------- Setup wizard ----------
 def _defaults_path() -> Path:
     return get_paths().defaults_file
@@ -62,13 +85,18 @@ def _first_run_needed() -> bool:
     return not d.get("first_run_done", False)
 
 def _wizard() -> None:
-    console.print(Panel("Welcome to Eagle Kit!\n\n1) Your username\n2) Git ignore preferences\n\nYou can change these later with 'ek setup'.", title="First-run Setup"))
+    console.print(Panel("Welcome to Eagle Kit!\n\n1) Your username\n2) Git ignore preferences for .eagle/\n\nYou can change these later with 'ek setup'.", title="First-run Setup"))
     d = _load_defaults()
     uname = Prompt.ask("Your username", default=str(d.get("user", {}).get("name", os.getenv("USER", "dev"))))
     d.setdefault("user", {})["name"] = uname
+    
+    console.print(Panel(".eagle/ contains local metadata.\nOptions: local (recommended), repo, global, none.", title="Git Ignore Policy"))
+    choice = Prompt.ask("Default ignore policy", choices=["local","repo","global","none"], default=str(d.get("preferences", {}).get("ignore_policy", "local")))
+    d.setdefault("preferences", {})["ignore_policy"] = choice
+    
     d["first_run_done"] = True
     _save_defaults(d)
-    console.print(f"Setup complete — user.name = {uname}")
+    console.print(f"Setup complete — user.name = {uname}, ignore_policy = {choice}")
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context):
@@ -81,6 +109,45 @@ def main(ctx: typer.Context):
 def setup():
     """Run the setup wizard"""
     _wizard()
+
+# ---------- Ignore management ----------
+ignore_app = typer.Typer(help="Manage how to ignore .eagle/ in Git")
+app.add_typer(ignore_app, name="ignore")
+
+@ignore_app.command("explain")
+def ignore_explain():
+    """Explain ignore options"""
+    console.print(Panel("Options:\nlocal -> .git/info/exclude (only you) [recommended]\nrepo -> .gitignore (versioned)\nglobal -> ~/.config/git/ignore\nnone -> don't touch anything", title="Eagle Kit — Ignore .eagle/"))
+
+def _apply_repo_ignore(repo_root: Path) -> bool:
+    gi = repo_root / ".gitignore"
+    return _ensure_line(gi, ".eagle/")
+
+def _apply_local_ignore(repo_root: Path) -> bool:
+    excl = _git_path(repo_root, "info/exclude")
+    if not excl:
+        return False
+    return _ensure_line(excl, ".eagle/")
+
+@ignore_app.command("repo")
+def ignore_repo():
+    """Add .eagle/ to .gitignore"""
+    root = _git_root(Path.cwd())
+    if not root:
+        console.print("Not a Git repository.")
+        raise typer.Exit(1)
+    changed = _apply_repo_ignore(root)
+    console.print("Added .eagle/ to .gitignore" if changed else ".gitignore already contains it")
+
+@ignore_app.command("local")
+def ignore_local():
+    """Add .eagle/ to .git/info/exclude"""
+    root = _git_root(Path.cwd())
+    if not root:
+        console.print("Not a Git repository.")
+        raise typer.Exit(1)
+    changed = _apply_local_ignore(root)
+    console.print("Added .eagle/ to .git/info/exclude" if changed else "Already present or couldn't resolve info/exclude")
 
 @app.command()
 def hello():
@@ -102,6 +169,22 @@ def add(path: str, name: Optional[str] = typer.Option(None, "--name", "-n")):
     proj_name = name or p.name
     _projects(reg, "default")[proj_name] = {"path": str(p)}
     _save(reg)
+    
+    # Apply ignore default if configured
+    d = _load_defaults()
+    policy = d.get("preferences", {}).get("ignore_policy", "none")
+    try:
+        if policy == "repo":
+            root = _git_root(p) or p
+            _apply_repo_ignore(root)
+        elif policy == "local":
+            root = _git_root(p) or p
+            _apply_local_ignore(root)
+        if policy in ("repo","local"):
+            console.print(f"Applied default ignore policy ({policy})")
+    except Exception:
+        pass
+    
     console.print(f"Added project: {proj_name} -> {p}")
 
 @app.command("list")
