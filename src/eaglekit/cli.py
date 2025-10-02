@@ -973,6 +973,480 @@ def run_new(task: str,
     cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=True), encoding="utf-8")
     console.print(f"Task created: {task} -> {cmd} at {cfg_path}")
 
+# ---------- TODO Management ----------
+todo_app = typer.Typer(
+    help="""Task and TODO management for projects.
+
+Manage TODOs and tasks for your projects with priorities, tags, and status tracking.
+Each project stores its TODOs in .eagle/todos.yaml.
+
+You can manage TODOs from anywhere using --project flag.
+
+Examples:
+  ek todo list                       # List TODOs for current project
+  ek todo list --project api         # List TODOs for 'api' project
+  ek todo add "Fix bug"              # Quick add TODO
+  ek todo add                        # Interactive add with details
+  ek todo done 1                     # Mark TODO #1 as done
+  ek todo show 3                     # Show TODO #3 details
+  ek todo list --priority high       # Filter by priority
+  ek todo list --tag bug             # Filter by tag
+  ek todo stats                      # Show statistics
+""",
+    rich_markup_mode="rich"
+)
+app.add_typer(todo_app, name="todo")
+
+from datetime import datetime
+
+def _get_todos_file(proj: Project) -> Path:
+    """Get the path to todos.yaml for a project."""
+    proj.ensure_meta()
+    return proj.meta_dir / "todos.yaml"
+
+def _load_todos(proj: Project) -> Dict[str, Any]:
+    """Load TODOs from project's todos.yaml file."""
+    todos_file = _get_todos_file(proj)
+    if not todos_file.exists():
+        return {"todos": [], "next_id": 1}
+    try:
+        data = yaml.safe_load(todos_file.read_text(encoding="utf-8"))
+        if not data:
+            return {"todos": [], "next_id": 1}
+        # Ensure next_id exists
+        if "next_id" not in data:
+            data["next_id"] = max([t.get("id", 0) for t in data.get("todos", [])] or [0]) + 1
+        return data
+    except Exception:
+        return {"todos": [], "next_id": 1}
+
+def _save_todos(proj: Project, data: Dict[str, Any]) -> None:
+    """Save TODOs to project's todos.yaml file."""
+    todos_file = _get_todos_file(proj)
+    todos_file.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+def _get_priority_emoji(priority: str) -> str:
+    """Get emoji for priority level."""
+    return {"high": "🔴", "med": "🟡", "low": "🟢"}.get(priority.lower(), "⚪")
+
+def _get_status_emoji(status: str) -> str:
+    """Get emoji for status."""
+    return {"todo": "⏳", "done": "✅", "blocked": "🚫"}.get(status.lower(), "⏳")
+
+def _format_todo_row(todo: Dict[str, Any]) -> tuple:
+    """Format a TODO as a table row."""
+    status_emoji = _get_status_emoji(todo.get("status", "todo"))
+    priority_emoji = _get_priority_emoji(todo.get("priority", "med"))
+    
+    status_text = f"{status_emoji} {todo.get('status', 'todo').upper()}"
+    priority_text = f"{priority_emoji} {todo.get('priority', 'med').upper()}"
+    tags_text = ", ".join(todo.get("tags", []))
+    
+    return (
+        str(todo.get("id", "?")),
+        status_text,
+        priority_text,
+        todo.get("title", "Untitled")[:40],
+        tags_text[:20] if tags_text else "—"
+    )
+
+@todo_app.command("list")
+def todo_list(
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name (defaults to current directory)"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name"),
+    status: Optional[str] = typer.Option(None, "--status", help="Filter by status (todo, done, blocked)"),
+    priority: Optional[str] = typer.Option(None, "--priority", help="Filter by priority (high, med, low)"),
+    tag: Optional[str] = typer.Option(None, "--tag", help="Filter by tag"),
+    search: Optional[str] = typer.Option(None, "--search", "-s", help="Search in title/description")
+):
+    """List all TODOs for a project.
+    
+    Shows all TODOs with their status, priority, and tags.
+    Can filter by various criteria.
+    
+    Examples:
+      ek todo list                     # List all TODOs in current project
+      ek todo list --project api       # List TODOs for 'api' project
+      ek todo list --status todo       # Only pending TODOs
+      ek todo list --priority high     # Only high priority
+      ek todo list --tag bug           # Only TODOs tagged with 'bug'
+      ek todo list --search "auth"     # Search for 'auth' in TODOs
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_todos(proj)
+    todos = data.get("todos", [])
+    
+    # Apply filters
+    if status:
+        todos = [t for t in todos if t.get("status", "todo").lower() == status.lower()]
+    if priority:
+        todos = [t for t in todos if t.get("priority", "med").lower() == priority.lower()]
+    if tag:
+        todos = [t for t in todos if tag.lower() in [tg.lower() for tg in t.get("tags", [])]]
+    if search:
+        search_lower = search.lower()
+        todos = [t for t in todos if 
+                 search_lower in t.get("title", "").lower() or 
+                 search_lower in t.get("description", "").lower()]
+    
+    if not todos:
+        console.print(f"[yellow]No TODOs found for project '{proj.name}'[/]")
+        console.print("[dim]Add one with: ek todo add \"Your task\"[/]")
+        return
+    
+    # Create table
+    table = Table(title=f"TODOs: {proj.name}")
+    table.add_column("ID", style="bold cyan", justify="right")
+    table.add_column("Status", style="bold")
+    table.add_column("Priority", style="bold")
+    table.add_column("Title")
+    table.add_column("Tags", style="dim")
+    
+    pending = 0
+    completed = 0
+    
+    for todo in todos:
+        table.add_row(*_format_todo_row(todo))
+        if todo.get("status", "todo").lower() == "done":
+            completed += 1
+        else:
+            pending += 1
+    
+    console.print(table)
+    console.print(f"\nTotal: {len(todos)} TODOs ([green]{pending} pending[/], [blue]{completed} completed[/])")
+
+@todo_app.command("add")
+def todo_add(
+    title: Optional[str] = typer.Argument(None, help="TODO title (omit for interactive mode)"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name (defaults to current directory)"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name"),
+    description: Optional[str] = typer.Option(None, "--desc", "-d", help="Description"),
+    priority: Optional[str] = typer.Option("med", "--priority", help="Priority: low, med, high"),
+    tags: Optional[str] = typer.Option(None, "--tags", "-t", help="Comma-separated tags")
+):
+    """Add a new TODO to a project.
+    
+    Quick mode: provide title as argument
+    Interactive mode: omit title for step-by-step input
+    
+    Examples:
+      ek todo add "Fix login bug"                    # Quick add
+      ek todo add                                    # Interactive add
+      ek todo add "Update docs" --priority high      # With priority
+      ek todo add "New feature" --tags feature,ui    # With tags
+      ek todo add "Bug fix" --project api            # Add to 'api' project
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_todos(proj)
+    
+    # Interactive mode
+    if not title:
+        console.print("\n[bold blue]📝 Agregar nuevo TODO[/]\n")
+        title = Prompt.ask("[green]Título[/]")
+        description = Prompt.ask("[green]Descripción[/] [dim](opcional)[/]", default="")
+        priority = Prompt.ask(
+            "[green]Prioridad[/]",
+            choices=["low", "med", "high"],
+            default="med"
+        )
+        tags_input = Prompt.ask("[green]Tags[/] [dim](separados por comas, opcional)[/]", default="")
+        tags_list = [t.strip() for t in tags_input.split(",") if t.strip()] if tags_input else []
+    else:
+        # Quick mode
+        tags_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    
+    # Create TODO
+    todo_id = data.get("next_id", 1)
+    new_todo = {
+        "id": todo_id,
+        "title": title,
+        "description": description or "",
+        "status": "todo",
+        "priority": priority.lower(),
+        "tags": tags_list,
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat()
+    }
+    
+    data["todos"].append(new_todo)
+    data["next_id"] = todo_id + 1
+    _save_todos(proj, data)
+    
+    priority_emoji = _get_priority_emoji(priority)
+    console.print(f"\n✓ TODO #{todo_id} creado: [bold]\"{title}\"[/]")
+    console.print(f"  [dim]Proyecto:[/] {proj.name}")
+    console.print(f"  [dim]Prioridad:[/] {priority_emoji} {priority.upper()}")
+    if tags_list:
+        console.print(f"  [dim]Tags:[/] {', '.join(tags_list)}")
+    console.print(f"\n[dim]Use 'ek todo show {todo_id}' para ver detalles[/]")
+
+@todo_app.command("done")
+def todo_done(
+    todo_id: int = typer.Argument(..., help="TODO ID to mark as done"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name")
+):
+    """Mark a TODO as completed.
+    
+    Examples:
+      ek todo done 1                  # Mark TODO #1 as done
+      ek todo done 3 --project api    # Mark TODO #3 in 'api' project as done
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_todos(proj)
+    
+    todo = next((t for t in data["todos"] if t["id"] == todo_id), None)
+    if not todo:
+        console.print(f"[red]TODO #{todo_id} not found in project '{proj.name}'[/]")
+        raise typer.Exit(1)
+    
+    todo["status"] = "done"
+    todo["updated_at"] = datetime.now().isoformat()
+    _save_todos(proj, data)
+    
+    console.print(f"✅ TODO #{todo_id} marcado como completado: [bold]\"{todo['title']}\"[/]")
+
+@todo_app.command("remove")
+def todo_remove(
+    todo_id: int = typer.Argument(..., help="TODO ID to remove"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation")
+):
+    """Remove a TODO permanently.
+    
+    Examples:
+      ek todo remove 1                # Remove TODO #1
+      ek todo remove 2 --force        # Remove without confirmation
+      ek todo remove 3 --project api  # Remove from 'api' project
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_todos(proj)
+    
+    todo = next((t for t in data["todos"] if t["id"] == todo_id), None)
+    if not todo:
+        console.print(f"[red]TODO #{todo_id} not found in project '{proj.name}'[/]")
+        raise typer.Exit(1)
+    
+    if not force:
+        if not typer.confirm(f"Remove TODO #{todo_id}: \"{todo['title']}\"?"):
+            console.print("[yellow]Cancelled[/]")
+            raise typer.Exit(0)
+    
+    data["todos"] = [t for t in data["todos"] if t["id"] != todo_id]
+    _save_todos(proj, data)
+    
+    console.print(f"🗑️  TODO #{todo_id} eliminado: [bold]\"{todo['title']}\"[/]")
+
+@todo_app.command("show")
+def todo_show(
+    todo_id: int = typer.Argument(..., help="TODO ID to show"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name")
+):
+    """Show detailed information about a TODO.
+    
+    Examples:
+      ek todo show 1                 # Show TODO #1 details
+      ek todo show 2 --project api   # Show TODO #2 from 'api' project
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_todos(proj)
+    
+    todo = next((t for t in data["todos"] if t["id"] == todo_id), None)
+    if not todo:
+        console.print(f"[red]TODO #{todo_id} not found in project '{proj.name}'[/]")
+        raise typer.Exit(1)
+    
+    status_emoji = _get_status_emoji(todo.get("status", "todo"))
+    priority_emoji = _get_priority_emoji(todo.get("priority", "med"))
+    
+    console.print(f"\n{'━' * 60}")
+    console.print(f"[bold cyan]TODO #{todo['id']}[/] - {proj.name}")
+    console.print(f"{'━' * 60}\n")
+    
+    console.print(f"  [bold]Title:[/]       {todo['title']}")
+    console.print(f"  [bold]Status:[/]      {status_emoji} {todo.get('status', 'todo').upper()}")
+    console.print(f"  [bold]Priority:[/]    {priority_emoji} {todo.get('priority', 'med').upper()}")
+    
+    if todo.get("tags"):
+        console.print(f"  [bold]Tags:[/]        {', '.join(todo['tags'])}")
+    
+    console.print(f"  [bold]Created:[/]     {todo.get('created_at', 'Unknown')}")
+    console.print(f"  [bold]Updated:[/]     {todo.get('updated_at', 'Unknown')}")
+    
+    if todo.get("description"):
+        console.print(f"\n  [bold]Description:[/]")
+        for line in todo["description"].split("\n"):
+            console.print(f"  {line}")
+    
+    console.print(f"\n{'━' * 60}\n")
+
+@todo_app.command("edit")
+def todo_edit(
+    todo_id: int = typer.Argument(..., help="TODO ID to edit"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name"),
+    title: Optional[str] = typer.Option(None, "--title", help="New title"),
+    description: Optional[str] = typer.Option(None, "--desc", help="New description"),
+    priority: Optional[str] = typer.Option(None, "--priority", help="New priority (low/med/high)"),
+    status: Optional[str] = typer.Option(None, "--status", help="New status (todo/done/blocked)"),
+    tags: Optional[str] = typer.Option(None, "--tags", help="New tags (comma-separated)")
+):
+    """Edit an existing TODO.
+    
+    Examples:
+      ek todo edit 1 --title "New title"        # Change title
+      ek todo edit 2 --priority high            # Change priority
+      ek todo edit 3 --status blocked           # Change status
+      ek todo edit 4 --tags bug,urgent          # Change tags
+      ek todo edit 5 --project api              # Edit TODO in 'api' project
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_todos(proj)
+    
+    todo = next((t for t in data["todos"] if t["id"] == todo_id), None)
+    if not todo:
+        console.print(f"[red]TODO #{todo_id} not found in project '{proj.name}'[/]")
+        raise typer.Exit(1)
+    
+    changes = []
+    
+    if title:
+        todo["title"] = title
+        changes.append(f"título → \"{title}\"")
+    
+    if description is not None:  # Allow empty string
+        todo["description"] = description
+        changes.append("descripción")
+    
+    if priority:
+        if priority.lower() not in ["low", "med", "high"]:
+            console.print("[red]Priority must be: low, med, or high[/]")
+            raise typer.Exit(1)
+        todo["priority"] = priority.lower()
+        changes.append(f"prioridad → {priority.upper()}")
+    
+    if status:
+        if status.lower() not in ["todo", "done", "blocked"]:
+            console.print("[red]Status must be: todo, done, or blocked[/]")
+            raise typer.Exit(1)
+        todo["status"] = status.lower()
+        changes.append(f"estado → {status.upper()}")
+    
+    if tags is not None:
+        tags_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+        todo["tags"] = tags_list
+        changes.append(f"tags → {', '.join(tags_list) if tags_list else '(ninguno)'}")
+    
+    if not changes:
+        console.print("[yellow]No changes specified. Use --title, --desc, --priority, --status, or --tags[/]")
+        raise typer.Exit(0)
+    
+    todo["updated_at"] = datetime.now().isoformat()
+    _save_todos(proj, data)
+    
+    console.print(f"✓ TODO #{todo_id} actualizado:")
+    for change in changes:
+        console.print(f"  • {change}")
+
+@todo_app.command("clear")
+def todo_clear(
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation")
+):
+    """Remove all completed TODOs.
+    
+    Examples:
+      ek todo clear                  # Clear completed TODOs
+      ek todo clear --force          # Clear without confirmation
+      ek todo clear --project api    # Clear in 'api' project
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_todos(proj)
+    
+    completed = [t for t in data["todos"] if t.get("status", "todo").lower() == "done"]
+    
+    if not completed:
+        console.print(f"[yellow]No completed TODOs found in project '{proj.name}'[/]")
+        return
+    
+    if not force:
+        console.print(f"\n[bold]Completed TODOs to be removed:[/]")
+        for todo in completed:
+            console.print(f"  • #{todo['id']}: {todo['title']}")
+        console.print()
+        
+        if not typer.confirm(f"Remove {len(completed)} completed TODO(s)?"):
+            console.print("[yellow]Cancelled[/]")
+            raise typer.Exit(0)
+    
+    data["todos"] = [t for t in data["todos"] if t.get("status", "todo").lower() != "done"]
+    _save_todos(proj, data)
+    
+    console.print(f"✓ Eliminados {len(completed)} TODOs completados")
+
+@todo_app.command("stats")
+def todo_stats(
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name")
+):
+    """Show TODO statistics for a project.
+    
+    Examples:
+      ek todo stats                  # Stats for current project
+      ek todo stats --project api    # Stats for 'api' project
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_todos(proj)
+    todos = data.get("todos", [])
+    
+    if not todos:
+        console.print(f"[yellow]No TODOs found for project '{proj.name}'[/]")
+        return
+    
+    # Calculate statistics
+    total = len(todos)
+    pending = len([t for t in todos if t.get("status", "todo").lower() == "todo"])
+    done = len([t for t in todos if t.get("status", "todo").lower() == "done"])
+    blocked = len([t for t in todos if t.get("status", "todo").lower() == "blocked"])
+    
+    high = len([t for t in todos if t.get("priority", "med").lower() == "high"])
+    med = len([t for t in todos if t.get("priority", "med").lower() == "med"])
+    low = len([t for t in todos if t.get("priority", "med").lower() == "low"])
+    
+    # Count tags
+    tag_counts = {}
+    for todo in todos:
+        for tag in todo.get("tags", []):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    
+    top_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    
+    # Display statistics
+    console.print(f"\n{'━' * 60}")
+    console.print(f"[bold cyan]TODO Statistics[/] - {proj.name}")
+    console.print(f"{'━' * 60}\n")
+    
+    console.print(f"  [bold]Total TODOs:[/]      {total}")
+    console.print(f"  ⏳ Pending:          {pending}  ({pending/total*100:.1f}%)" if total > 0 else "  ⏳ Pending:          0")
+    console.print(f"  ✅ Completed:        {done}  ({done/total*100:.1f}%)" if total > 0 else "  ✅ Completed:        0")
+    if blocked > 0:
+        console.print(f"  🚫 Blocked:          {blocked}  ({blocked/total*100:.1f}%)")
+    
+    console.print(f"\n  [bold]By Priority:[/]")
+    console.print(f"    🔴 High:           {high}")
+    console.print(f"    🟡 Medium:         {med}")
+    console.print(f"    🟢 Low:            {low}")
+    
+    if top_tags:
+        console.print(f"\n  [bold]Most used tags:[/]")
+        for tag, count in top_tags:
+            console.print(f"    • {tag} ({count})")
+    
+    console.print(f"\n{'━' * 60}\n")
+
 # ---------- Simple project commands ----------
 @app.command()
 def add(
