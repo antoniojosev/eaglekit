@@ -1447,6 +1447,457 @@ def todo_stats(
     
     console.print(f"\n{'━' * 60}\n")
 
+# ---------- Comment Management ----------
+comment_app = typer.Typer(
+    help="""Comment and note system for projects.
+
+Add comments, notes, and observations to your projects. Perfect for:
+• Development notes and observations
+• Bug reports and findings
+• Ideas for future improvements
+• Team communication
+• Project changelog/diary
+
+Each project stores comments in .eagle/comments.yaml.
+You can manage comments from anywhere using --project flag.
+
+Categories:
+  note     → General note
+  idea     → Idea for implementation
+  bug      → Bug observation
+  warning  → Warning/precaution
+  done     → Completed task/change
+  log      → Changelog entry
+
+Examples:
+  ek comment add "Refactor needed in auth module"
+  ek comment add "Found critical bug" --category bug --tags urgent
+  ek comment list --project api
+  ek comment list --category bug
+  ek comment search "auth"
+  ek comment show 1 --project webapp
+""",
+    rich_markup_mode="rich"
+)
+app.add_typer(comment_app, name="comment")
+
+def _get_comments_file(proj: Project) -> Path:
+    """Get the path to comments.yaml for a project."""
+    proj.ensure_meta()
+    return proj.meta_dir / "comments.yaml"
+
+def _load_comments(proj: Project) -> Dict[str, Any]:
+    """Load comments from project's comments.yaml file."""
+    comments_file = _get_comments_file(proj)
+    if not comments_file.exists():
+        return {"comments": [], "next_id": 1}
+    try:
+        data = yaml.safe_load(comments_file.read_text(encoding="utf-8"))
+        if not data:
+            return {"comments": [], "next_id": 1}
+        if "next_id" not in data:
+            data["next_id"] = max([c.get("id", 0) for c in data.get("comments", [])] or [0]) + 1
+        return data
+    except Exception:
+        return {"comments": [], "next_id": 1}
+
+def _save_comments(proj: Project, data: Dict[str, Any]) -> None:
+    """Save comments to project's comments.yaml file."""
+    comments_file = _get_comments_file(proj)
+    comments_file.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+def _get_category_emoji(category: str) -> str:
+    """Get emoji for comment category."""
+    return {
+        "note": "📝",
+        "idea": "💡",
+        "bug": "🐛",
+        "warning": "⚠️",
+        "done": "✅",
+        "log": "📅"
+    }.get(category.lower(), "📝")
+
+def _format_comment_row(comment: Dict[str, Any]) -> tuple:
+    """Format a comment as a table row."""
+    category_emoji = _get_category_emoji(comment.get("category", "note"))
+    category_text = f"{category_emoji} {comment.get('category', 'note')}"
+    
+    # Format date
+    created = comment.get("created_at", "")
+    date_str = created[:10] if created else "Unknown"
+    
+    # Truncate message
+    message = comment.get("message", "")[:50]
+    if len(comment.get("message", "")) > 50:
+        message += "..."
+    
+    tags_text = ", ".join(comment.get("tags", []))
+    
+    return (
+        str(comment.get("id", "?")),
+        category_text,
+        date_str,
+        message,
+        tags_text[:15] if tags_text else "—"
+    )
+
+@comment_app.command("add")
+def comment_add(
+    message: str = typer.Argument(..., help="Comment message"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name (defaults to current directory)"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name"),
+    category: str = typer.Option("note", "--category", "-c", help="Category: note, idea, bug, warning, done, log"),
+    tags: Optional[str] = typer.Option(None, "--tags", "-t", help="Comma-separated tags")
+):
+    """Add a comment to a project.
+    
+    Comments are notes and observations about the project.
+    
+    Examples:
+      ek comment add "Need to refactor auth"
+      ek comment add "Critical bug found" --category bug
+      ek comment add "Good idea for v2" --category idea --tags feature,ui
+      ek comment add "Deployed to prod" --category log --project api
+    """
+    # Validate category
+    valid_categories = ["note", "idea", "bug", "warning", "done", "log"]
+    if category.lower() not in valid_categories:
+        console.print(f"[red]Invalid category. Must be one of: {', '.join(valid_categories)}[/]")
+        raise typer.Exit(1)
+    
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_comments(proj)
+    
+    # Parse tags
+    tags_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    
+    # Get author from environment or defaults
+    author = os.getenv("USER", "unknown")
+    
+    # Create comment
+    comment_id = data.get("next_id", 1)
+    new_comment = {
+        "id": comment_id,
+        "message": message,
+        "category": category.lower(),
+        "tags": tags_list,
+        "author": author,
+        "created_at": datetime.now().isoformat()
+    }
+    
+    data["comments"].append(new_comment)
+    data["next_id"] = comment_id + 1
+    _save_comments(proj, data)
+    
+    category_emoji = _get_category_emoji(category)
+    console.print(f"\n✓ Comment #{comment_id} added to project [cyan]{proj.name}[/]")
+    console.print(f"  [dim]Category:[/] {category_emoji} {category.upper()}")
+    if tags_list:
+        console.print(f"  [dim]Tags:[/] {', '.join(tags_list)}")
+
+@comment_app.command("list")
+def comment_list(
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name"),
+    category: Optional[str] = typer.Option(None, "--category", "-c", help="Filter by category"),
+    tag: Optional[str] = typer.Option(None, "--tag", "-t", help="Filter by tag"),
+    recent: Optional[int] = typer.Option(None, "--recent", "-n", help="Show only N most recent")
+):
+    """List all comments for a project.
+    
+    Examples:
+      ek comment list
+      ek comment list --project api
+      ek comment list --category bug
+      ek comment list --tag urgent
+      ek comment list --recent 10
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_comments(proj)
+    comments = data.get("comments", [])
+    
+    # Apply filters
+    if category:
+        comments = [c for c in comments if c.get("category", "note").lower() == category.lower()]
+    if tag:
+        comments = [c for c in comments if tag.lower() in [t.lower() for t in c.get("tags", [])]]
+    
+    # Sort by date (newest first)
+    comments.sort(key=lambda c: c.get("created_at", ""), reverse=True)
+    
+    # Limit to recent
+    if recent:
+        comments = comments[:recent]
+    
+    if not comments:
+        console.print(f"[yellow]No comments found for project '{proj.name}'[/]")
+        console.print("[dim]Add one with: ek comment add \"Your note\"[/]")
+        return
+    
+    # Create table
+    table = Table(title=f"Comments: {proj.name}")
+    table.add_column("ID", style="bold cyan", justify="right")
+    table.add_column("Category", style="bold")
+    table.add_column("Date")
+    table.add_column("Comment")
+    table.add_column("Tags", style="dim")
+    
+    for comment in comments:
+        table.add_row(*_format_comment_row(comment))
+    
+    console.print(table)
+    console.print(f"\n{len(comments)} comment(s) total")
+
+@comment_app.command("show")
+def comment_show(
+    comment_id: int = typer.Argument(..., help="Comment ID to show"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name")
+):
+    """Show detailed information about a comment.
+    
+    Examples:
+      ek comment show 1
+      ek comment show 3 --project api
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_comments(proj)
+    
+    comment = next((c for c in data["comments"] if c["id"] == comment_id), None)
+    if not comment:
+        console.print(f"[red]Comment #{comment_id} not found in project '{proj.name}'[/]")
+        raise typer.Exit(1)
+    
+    category_emoji = _get_category_emoji(comment.get("category", "note"))
+    
+    console.print(f"\n{'━' * 60}")
+    console.print(f"[bold cyan]Comment #{comment['id']}[/] - {proj.name}")
+    console.print(f"{'━' * 60}\n")
+    
+    console.print(f"  [bold]Category:[/]    {category_emoji} {comment.get('category', 'note').upper()}")
+    console.print(f"  [bold]Author:[/]      {comment.get('author', 'unknown')}")
+    console.print(f"  [bold]Created:[/]     {comment.get('created_at', 'Unknown')}")
+    
+    if comment.get("tags"):
+        console.print(f"  [bold]Tags:[/]        {', '.join(comment['tags'])}")
+    
+    console.print(f"\n  [bold]Message:[/]")
+    for line in comment.get("message", "").split("\n"):
+        console.print(f"  {line}")
+    
+    console.print(f"\n{'━' * 60}\n")
+
+@comment_app.command("edit")
+def comment_edit(
+    comment_id: int = typer.Argument(..., help="Comment ID to edit"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name"),
+    message: Optional[str] = typer.Option(None, "--message", "-m", help="New message"),
+    category: Optional[str] = typer.Option(None, "--category", "-c", help="New category"),
+    tags: Optional[str] = typer.Option(None, "--tags", "-t", help="New tags (comma-separated)")
+):
+    """Edit an existing comment.
+    
+    Examples:
+      ek comment edit 1 --message "Updated note"
+      ek comment edit 2 --category bug
+      ek comment edit 3 --tags urgent,critical
+      ek comment edit 4 --project api --message "New text"
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_comments(proj)
+    
+    comment = next((c for c in data["comments"] if c["id"] == comment_id), None)
+    if not comment:
+        console.print(f"[red]Comment #{comment_id} not found in project '{proj.name}'[/]")
+        raise typer.Exit(1)
+    
+    changes = []
+    
+    if message:
+        comment["message"] = message
+        changes.append(f"message → \"{message[:30]}...\"" if len(message) > 30 else f"message → \"{message}\"")
+    
+    if category:
+        valid_categories = ["note", "idea", "bug", "warning", "done", "log"]
+        if category.lower() not in valid_categories:
+            console.print(f"[red]Invalid category. Must be one of: {', '.join(valid_categories)}[/]")
+            raise typer.Exit(1)
+        comment["category"] = category.lower()
+        changes.append(f"category → {category.upper()}")
+    
+    if tags is not None:
+        tags_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+        comment["tags"] = tags_list
+        changes.append(f"tags → {', '.join(tags_list) if tags_list else '(none)'}")
+    
+    if not changes:
+        console.print("[yellow]No changes specified. Use --message, --category, or --tags[/]")
+        raise typer.Exit(0)
+    
+    _save_comments(proj, data)
+    
+    console.print(f"✓ Comment #{comment_id} updated:")
+    for change in changes:
+        console.print(f"  • {change}")
+
+@comment_app.command("remove")
+def comment_remove(
+    comment_id: int = typer.Argument(..., help="Comment ID to remove"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation")
+):
+    """Remove a comment permanently.
+    
+    Examples:
+      ek comment remove 1
+      ek comment remove 2 --force
+      ek comment remove 3 --project api
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_comments(proj)
+    
+    comment = next((c for c in data["comments"] if c["id"] == comment_id), None)
+    if not comment:
+        console.print(f"[red]Comment #{comment_id} not found in project '{proj.name}'[/]")
+        raise typer.Exit(1)
+    
+    if not force:
+        preview = comment["message"][:50]
+        if len(comment["message"]) > 50:
+            preview += "..."
+        if not typer.confirm(f"Remove comment #{comment_id}: \"{preview}\"?"):
+            console.print("[yellow]Cancelled[/]")
+            raise typer.Exit(0)
+    
+    data["comments"] = [c for c in data["comments"] if c["id"] != comment_id]
+    _save_comments(proj, data)
+    
+    console.print(f"🗑️  Comment #{comment_id} removed")
+
+@comment_app.command("search")
+def comment_search(
+    query: str = typer.Argument(..., help="Search query"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name")
+):
+    """Search for comments by text.
+    
+    Searches in both message content and tags.
+    
+    Examples:
+      ek comment search "auth"
+      ek comment search "bug" --project api
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_comments(proj)
+    comments = data.get("comments", [])
+    
+    # Search in message and tags
+    query_lower = query.lower()
+    matches = []
+    for comment in comments:
+        if query_lower in comment.get("message", "").lower():
+            matches.append(comment)
+        elif any(query_lower in tag.lower() for tag in comment.get("tags", [])):
+            matches.append(comment)
+    
+    if not matches:
+        console.print(f"[yellow]No comments found matching '{query}' in project '{proj.name}'[/]")
+        return
+    
+    console.print(f"\nFound [cyan]{len(matches)}[/] comment(s) matching '[bold]{query}[/]':\n")
+    
+    for comment in matches:
+        category_emoji = _get_category_emoji(comment.get("category", "note"))
+        message_preview = comment["message"][:60]
+        if len(comment["message"]) > 60:
+            message_preview += "..."
+        
+        console.print(f"  [cyan]#{comment['id']}[/] {category_emoji} [dim]{comment.get('created_at', '')[:10]}[/]")
+        console.print(f"      {message_preview}")
+        if comment.get("tags"):
+            console.print(f"      [dim]Tags: {', '.join(comment['tags'])}[/]")
+        console.print()
+
+@comment_app.command("clear")
+def comment_clear(
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    ws: Optional[str] = typer.Option(None, "--ws", help="Workspace name"),
+    older_than: Optional[int] = typer.Option(None, "--older-than", help="Remove comments older than N days"),
+    category: Optional[str] = typer.Option(None, "--category", help="Only remove comments of this category"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation")
+):
+    """Remove old comments.
+    
+    Examples:
+      ek comment clear --older-than 30
+      ek comment clear --category done
+      ek comment clear --older-than 7 --category log
+      ek comment clear --project api --older-than 60
+    """
+    proj = _project_from_name_or_cwd(project, ws)
+    data = _load_comments(proj)
+    comments = data.get("comments", [])
+    
+    if not comments:
+        console.print(f"[yellow]No comments found in project '{proj.name}'[/]")
+        return
+    
+    # Filter comments to remove
+    to_remove = []
+    cutoff_date = None
+    
+    if older_than:
+        from datetime import timedelta
+        cutoff_date = datetime.now() - timedelta(days=older_than)
+    
+    for comment in comments:
+        should_remove = True
+        
+        # Check age
+        if older_than:
+            try:
+                comment_date = datetime.fromisoformat(comment.get("created_at", ""))
+                if comment_date >= cutoff_date:
+                    should_remove = False
+            except Exception:
+                should_remove = False
+        
+        # Check category
+        if category and comment.get("category", "note").lower() != category.lower():
+            should_remove = False
+        
+        if should_remove and (older_than or category):
+            to_remove.append(comment)
+    
+    if not to_remove:
+        console.print(f"[yellow]No comments match the removal criteria[/]")
+        return
+    
+    if not force:
+        console.print(f"\n[bold]Comments to be removed:[/]")
+        for comment in to_remove[:10]:  # Show max 10
+            msg_preview = comment["message"][:40]
+            if len(comment["message"]) > 40:
+                msg_preview += "..."
+            console.print(f"  • #{comment['id']}: {msg_preview}")
+        
+        if len(to_remove) > 10:
+            console.print(f"  ... and {len(to_remove) - 10} more")
+        
+        console.print()
+        if not typer.confirm(f"Remove {len(to_remove)} comment(s)?"):
+            console.print("[yellow]Cancelled[/]")
+            raise typer.Exit(0)
+    
+    # Remove comments
+    data["comments"] = [c for c in comments if c not in to_remove]
+    _save_comments(proj, data)
+    
+    console.print(f"✓ Removed {len(to_remove)} comment(s)")
+
 # ---------- Simple project commands ----------
 @app.command()
 def add(
