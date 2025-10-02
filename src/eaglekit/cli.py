@@ -211,39 +211,6 @@ def _generate_project_variables(ws: Optional[str] = None) -> None:
     
     console.print(f"[dim]✓ Variables updated: {len(projects)} projects in {vars_file}[/]")
 
-def _generate_ekadd_function() -> str:
-    """Generate ekadd helper function code."""
-    return '''
-# Eagle Kit helper function - auto-add with variable loading
-ekadd() {
-    ek add "$@"
-    if [ $? -eq 0 ]; then
-        source ~/.eagle_projects
-        echo "✓ Variables recargadas automáticamente"
-        
-        # Extract project name for hint
-        local proj_name=""
-        local args=("$@")
-        
-        # Look for --name parameter
-        for ((i=0; i<${#args[@]}; i++)); do
-            if [[ "${args[i]}" == "--name" ]] || [[ "${args[i]}" == "-n" ]]; then
-                proj_name="${args[i+1]}"
-                break
-            fi
-        done
-        
-        # If no --name, use directory name
-        if [ -z "$proj_name" ]; then
-            proj_name=$(basename "$(realpath "${args[0]:-$(pwd)}")")
-        fi
-        
-        # Clean name for shell variable
-        local clean_name=$(echo "$proj_name" | sed 's/[^a-zA-Z0-9_]/_/g' | sed 's/^[0-9]/_&/')
-        echo "💡 Usa: cd \\$${clean_name}"
-    fi
-}'''.strip()
-
 def _git_root(path: Path) -> Optional[Path]:
     res = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     if res.returncode == 0:
@@ -434,58 +401,6 @@ def _wizard() -> None:
             with open(rc_file, 'a') as f:
                 f.write(f"\n# Eagle Kit project variables\n{source_line}\n")
             console.print(f"[dim]✓ Auto-sourcing agregado a {rc_file.name}[/]")
-        
-        # Offer ekadd helper function
-        console.print("\n[bold blue]🔧 Función Helper ekadd[/]")
-        console.print("─" * 30)
-        
-        console.print(Panel(
-            "[bold yellow]¿Instalar función helper ekadd?[/]\n\n"
-            "[green]ekadd[/] → Agregar proyectos [blue]y cargar variables automáticamente[/]\n"
-            "[blue]•[/] Combina 'ek add' + 'source ~/.eagle_projects'\n"
-            "[blue]•[/] Te muestra el comando cd inmediatamente\n"
-            "[blue]•[/] Sin configuración manual adicional\n\n"
-            "[dim]Ejemplo: ekadd . --name api → auto-carga $api inmediatamente[/]",
-            title="🚀 Helper Function",
-            border_style="blue"
-        ))
-        
-        install_ekadd = Prompt.ask(
-            "[green]¿Instalar función ekadd?[/]",
-            choices=["y", "n"],
-            default="y",
-            show_choices=True,
-            show_default=True
-        )
-        
-        if install_ekadd == "y":
-            try:
-                # Use the existing install_ekadd function
-                _generate_project_variables()
-                ekadd_function = _generate_ekadd_function()
-                
-                # Add function to config
-                if rc_file.exists():
-                    content = rc_file.read_text()
-                    if 'ekadd()' not in content:
-                        content += '\n# Eagle Kit ekadd helper function\n'
-                        content += ekadd_function + '\n'
-                        rc_file.write_text(content)
-                        console.print("[dim]✓ Función ekadd instalada[/]")
-                    else:
-                        console.print("[dim]✓ Función ekadd ya existe[/]")
-                else:
-                    with open(rc_file, 'w') as f:
-                        f.write(f"# Eagle Kit ekadd helper function\n{ekadd_function}\n")
-                    console.print(f"[dim]✓ Función ekadd instalada en {rc_file.name}[/]")
-                
-                d.setdefault("preferences", {})["ekadd_helper"] = True
-            except Exception as e:
-                console.print(f"[red]Error instalando ekadd: {e}[/]")
-                d.setdefault("preferences", {})["ekadd_helper"] = False
-        else:
-            d.setdefault("preferences", {})["ekadd_helper"] = False
-            console.print("[dim]✓ Función ekadd no instalada[/]")
             
     else:
         d.setdefault("preferences", {})["shell_variables"] = False
@@ -850,116 +765,6 @@ def shell_function():
     else:
         console.print("[red]Error getting shell function[/]")
 
-@shell_app.command("install-ekadd", help="Install ekadd helper function for automatic variable loading")
-def install_ekadd():
-    """Install ekadd helper function in shell."""
-    # Generate shell files
-    _generate_project_variables()
-    ekadd_function = _generate_ekadd_function()
-    
-    # Determine shell config file
-    shell = os.environ.get('SHELL', '/bin/bash')
-    shell_name = Path(shell).name
-    
-    if shell_name == 'zsh':
-        config_file = Path.home() / '.zshrc'
-    elif shell_name == 'bash':
-        config_file = Path.home() / '.bashrc'
-    else:
-        config_file = Path.home() / '.profile'
-    
-    console.print(f"[bold blue]Installing ekadd function...[/]")
-    
-    # Check if already installed
-    if config_file.exists():
-        content = config_file.read_text()
-        if 'ekadd()' in content:
-            console.print("⚠️  ekadd function already exists in shell config")
-            if not typer.confirm("Replace existing ekadd function?"):
-                raise typer.Abort()
-            
-            # Remove existing function
-            lines = content.split('\n')
-            new_lines = []
-            in_ekadd = False
-            for line in lines:
-                if line.strip().startswith('ekadd()'):
-                    in_ekadd = True
-                    continue
-                elif in_ekadd and line.strip() == '}':
-                    in_ekadd = False
-                    continue
-                elif not in_ekadd:
-                    new_lines.append(line)
-            
-            content = '\n'.join(new_lines)
-    else:
-        content = ""
-    
-    # Add function to config
-    if content and not content.endswith('\n'):
-        content += '\n'
-    
-    content += '\n# Eagle Kit ekadd helper function\n'
-    content += ekadd_function + '\n'
-    
-    # Add auto-loading
-    content += '\n# Auto-load Eagle Kit project variables\n'
-    content += 'if [ -f ~/.eagle_projects ]; then\n'
-    content += '    source ~/.eagle_projects\n'
-    content += 'fi\n'
-    
-    config_file.write_text(content)
-    
-    console.print(f"✅ Function ekadd installed in {config_file}")
-    console.print("✅ Auto-loading of variables configured")
-    console.print("")
-    console.print("[bold yellow]Usage:[/]")
-    console.print("  [cyan]ekadd /path/to/project[/] - Add project and auto-load variables")
-    console.print("  [cyan]ekadd . --name myproject[/] - Add current dir with name")
-    console.print("")
-    console.print("[dim]Restart your shell or run:[/]")
-    console.print(f"  [cyan]source {config_file}[/]")
-
-@shell_app.command("vars")
-def shell_vars():
-    """Show current project variables."""
-    vars_file = Path.home() / '.eagle_projects'
-    
-    if not vars_file.exists():
-        console.print("[yellow]No project variables file found[/]")
-        console.print("[dim]Variables are generated when you add projects[/]")
-        return
-    
-    content = vars_file.read_text()
-    
-    # Parse variables
-    variables = []
-    for line in content.split('\n'):
-        if line.startswith('export '):
-            var_line = line[7:]  # Remove 'export '
-            if '=' in var_line:
-                name, path = var_line.split('=', 1)
-                path = path.strip('"')
-                variables.append((name, path))
-    
-    if not variables:
-        console.print("[yellow]No variables found in file[/]")
-        return
-    
-    console.print(f"[bold blue]📂 Project Variables ({len(variables)})[/]")
-    table = Table()
-    table.add_column("Variable", style="bold green")
-    table.add_column("Path", style="dim")
-    table.add_column("Usage", style="cyan")
-    
-    for var_name, path in variables:
-        table.add_row(var_name, path, f"cd ${var_name}")
-    
-    console.print(table)
-    console.print(f"\n[dim]File: {vars_file}[/]")
-    console.print("[dim]Usage: cd $variable_name[/]")
-
 @shell_app.command("refresh")
 def shell_refresh():
     """Regenerate project variables file."""
@@ -986,8 +791,8 @@ Task Types:
 
 Examples:
   ek run list                    # Show available tasks
-  ek run do build                # Run 'build' task
-  ek run task test               # Run 'test' task (alternative syntax)
+  ek run task build              # Run 'build' task
+  ek run task test               # Run 'test' task
   ek run new deploy --bash       # Create new bash script task
   ek deploy                      # Direct task execution (if not a known command)
 
@@ -1080,7 +885,7 @@ def run_list(
       ek run list --ws production # Show tasks in production workspace
 
     Tasks can be shell commands, script references, or command arrays.
-    Use 'ek run do TASK' or 'ek run task TASK' to execute tasks.
+    Use 'ek run task TASK' to execute tasks.
     """
     reg = _reg(); wsname = _cur_ws(reg, ws)
     proj = _project_from_name_or_cwd(name, ws=wsname)
@@ -1093,24 +898,23 @@ def run_list(
         table.add_row(t, (json.dumps(spec) if isinstance(spec, list) else str(spec)))
     console.print(table)
 
-@run_app.command("do")
-def run_do(name: Optional[str] = typer.Argument(None),
-           task: Optional[str] = typer.Argument(None),
-           ws: Optional[str] = typer.Option(None, "--ws"),
-           args: List[str] = typer.Argument(None)):
-    reg = _reg(); wsname = _cur_ws(reg, ws)
-    proj = _project_from_name_or_cwd(name, ws=wsname)
-    tasks = _load_tasks_for(proj)
-    tname = task or "default"
-    if tname not in tasks:
-        console.print(f"[red]Unknown task:[/] {tname}"); raise typer.Exit(1)
-    _exec_task(proj, tasks[tname], args)
-
 @run_app.command("task")
 def run_task(task: str,
              name: Optional[str] = typer.Argument(None),
              ws: Optional[str] = typer.Option(None, "--ws"),
              args: List[str] = typer.Argument(None)):
+    """Execute a task defined in project configuration.
+    
+    Runs a task from .eagle/config.yaml or branch-specific configuration.
+    Tasks can be shell commands, scripts, or command arrays.
+    
+    Examples:
+      ek run task build              # Run 'build' task in current project
+      ek run task test myproject     # Run 'test' in specific project
+      ek run task deploy --ws prod   # Run 'deploy' in production workspace
+      
+    Pass additional arguments after task and project name.
+    """
     reg = _reg(); wsname = _cur_ws(reg, ws)
     proj = _project_from_name_or_cwd(name, ws=wsname)
     tasks = _load_tasks_for(proj)
