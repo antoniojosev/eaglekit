@@ -2032,13 +2032,71 @@ def list_projects():
     Use 'ek add' to register new projects.
     Use 'ek status' when inside a project to see current context.
     """
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.box import MINIMAL_DOUBLE_HEAD
+    from rich.text import Text
+    
     reg = _reg()
     cur = reg.get("current_workspace", "default")
-    table = Table(title=f"Projects (ws: {cur})")
-    table.add_column("Name", style="bold"); table.add_column("Path")
-    for name, meta in sorted(_projects(reg, cur).items()):
-        table.add_row(name, meta["path"])
-    console.print(table)
+    
+    # Create elegant table with custom styling
+    table = Table(
+        box=MINIMAL_DOUBLE_HEAD,
+        show_header=True,
+        header_style="bold bright_cyan",
+        border_style="bright_blue",
+        padding=(0, 1),
+        show_edge=True,
+        expand=False
+    )
+    
+    table.add_column("", width=2)
+    table.add_column("Project Name", style="bold bright_white", width=20)
+    table.add_column("Path", style="dim", overflow="fold")
+    table.add_column("TODOs", justify="right", style="bold", width=10)
+    
+    # Get all projects and count their TODOs
+    projects = sorted(_projects(reg, cur).items())
+    
+    for name, meta in projects:
+        # Load TODO count for this project
+        try:
+            proj = Project(name=name, path=Path(meta["path"]))
+            todos_file = proj.meta_dir / "todos.yaml"
+            todo_count = "—"
+            
+            if todos_file.exists():
+                todos_data = yaml.safe_load(todos_file.read_text(encoding="utf-8"))
+                if todos_data and "todos" in todos_data:
+                    # Count pending TODOs only
+                    pending = [t for t in todos_data["todos"] if t.get("status") != "done"]
+                    if len(pending) > 0:
+                        todo_count = f"[yellow]{len(pending)}[/yellow]"
+                    else:
+                        todo_count = "[green]—[/green]"
+        except:
+            todo_count = "—"
+        
+        table.add_row("▸", name, meta["path"], todo_count)
+    
+    # Create header with Text for better formatting
+    header = Text()
+    header.append("🦅 ", style="bold")
+    header.append("EAGLE KIT", style="bold bright_cyan")
+    header.append(" › ", style="dim")
+    header.append("Projects Dashboard", style="dim bright_white")
+    
+    # Create panel with elegant styling
+    panel = Panel(
+        table,
+        title=header,
+        subtitle=f"[dim]workspace: {cur}[/dim]",
+        border_style="bright_blue",
+        padding=(1, 2)
+    )
+    
+    console.print(panel)
 
 @app.command("status")
 def status():
