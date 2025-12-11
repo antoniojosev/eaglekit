@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 import json
+import logging
 from pathlib import Path
 import subprocess
 import typer
@@ -45,6 +46,7 @@ For command-specific help: ek COMMAND --help
     rich_markup_mode="rich"
 )
 console = Console()
+logger = logging.getLogger(__name__)
 
 # ---------- Plugin system ----------
 _loaded_plugins = []
@@ -102,7 +104,8 @@ def _get_available_plugins():
         return [{'name': ep.name, 'module': ep.value} for ep in plugin_eps]
     except ImportError:
         return []
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Could not retrieve plugin list: {e}")
         return []
 
 # Load plugins on import
@@ -136,7 +139,8 @@ def _project_by_cwd(reg: Dict[str, Any], wsname: str, cwd: Path | None = None) -
             if plen > best_len:
                 best = Project(name=name, path=p)
                 best_len = plen
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Project {name} is not a parent of cwd: {e}")
             continue
     return best
 
@@ -167,7 +171,8 @@ def _resolve_project_path(project_name: str, ws: Optional[str] = None) -> Option
         if pr:
             return Path(pr["path"]).expanduser().resolve()
         return None
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Could not resolve path for project {project_name}: {e}")
         return None
 
 def _clean_variable_name(name: str) -> str:
@@ -243,7 +248,8 @@ def _load_defaults() -> Dict[str, Any]:
         return {}
     try:
         return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    except Exception:
+    except Exception as e:
+        logger.error(f"Could not load defaults from {p}: {e}")
         return {}
 
 def _save_defaults(cfg: Dict[str, Any]) -> None:
@@ -447,8 +453,10 @@ def _wizard() -> None:
         try:
             shell_install()
             shell_installed = True
-        except:
+        except Exception as e:
             shell_installed = False
+            logger.warning(f"Shell integration installation failed: {e}")
+            console.print(f"[yellow]Warning: Could not install shell integration: {e}[/]")
     else:
         shell_installed = False
     
@@ -814,7 +822,8 @@ def _read_yaml(p: Path) -> Dict[str, Any]:
         return {}
     try:
         return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    except Exception:
+    except Exception as e:
+        logger.error(f"Could not read YAML from {p}: {e}")
         return {}
 
 def _load_tasks_for(proj: Project) -> Dict[str, Any]:
@@ -1017,7 +1026,8 @@ def _load_todos(proj: Project) -> Dict[str, Any]:
         if "next_id" not in data:
             data["next_id"] = max([t.get("id", 0) for t in data.get("todos", [])] or [0]) + 1
         return data
-    except Exception:
+    except Exception as e:
+        logger.error(f"Could not load TODOs from {todos_file}: {e}")
         return {"todos": [], "next_id": 1}
 
 def _save_todos(proj: Project, data: Dict[str, Any]) -> None:
@@ -1498,7 +1508,8 @@ def _load_comments(proj: Project) -> Dict[str, Any]:
         if "next_id" not in data:
             data["next_id"] = max([c.get("id", 0) for c in data.get("comments", [])] or [0]) + 1
         return data
-    except Exception:
+    except Exception as e:
+        logger.error(f"Could not load comments from {comments_file}: {e}")
         return {"comments": [], "next_id": 1}
 
 def _save_comments(proj: Project, data: Dict[str, Any]) -> None:
@@ -1862,7 +1873,8 @@ def comment_clear(
                 comment_date = datetime.fromisoformat(comment.get("created_at", ""))
                 if comment_date >= cutoff_date:
                     should_remove = False
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Could not parse comment date: {e}")
                 should_remove = False
         
         # Check category
@@ -1953,8 +1965,8 @@ def add(
             _apply_global_ignore()
         if policy in ("repo","local","global"):
             console.print(f"Applied default ignore policy ({policy})")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Could not apply ignore policy '{policy}': {e}")
     
     # ALWAYS generate shell variables automatically (this is the core feature!)
     _generate_project_variables(ws)
@@ -2075,8 +2087,9 @@ def list_projects():
                         todo_count = f"[yellow]{len(pending)}[/yellow]"
                     else:
                         todo_count = "[green]—[/green]"
-        except:
+        except Exception as e:
             todo_count = "—"
+            logger.debug(f"Could not load TODO count for project {name}: {e}")
         
         table.add_row("▸", name, meta["path"], todo_count)
     
@@ -2205,8 +2218,8 @@ def cd_project(
         elif subprocess.run(["which", "pbcopy"], capture_output=True).returncode == 0:
             subprocess.run(["pbcopy"], input=cd_command.encode())
             console.print("📋 [dim]Command copied to clipboard[/]")
-    except:
-        pass
+    except Exception as e:
+        logger.debug(f"Could not copy to clipboard: {e}")
 
 @app.command("plugins")
 def plugins():
@@ -2499,8 +2512,8 @@ def uninstall():
                     except Exception as e:
                         console.print(f"[yellow]Warning: Could not remove {test_env_dir}: {e}[/]")
                         console.print(f"[dim]You may need to manually remove: {test_env_dir}[/]")
-    except Exception:
-        pass  # which command might not be available
+    except Exception as e:
+        logger.debug(f"Could not check for ek command in PATH: {e}")  # which command might not be available
     
     console.print("")
     console.print("[bold green]✅ Eagle Kit completely removed![/]")
