@@ -1,3 +1,9 @@
 """Eagle Kit - Development project manager CLI"""
-__version__ = "0.1.0"
-__all__ = []
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("eaglekit")
+except PackageNotFoundError:
+    __version__ = "unknown"
+
+__all__ = ["__version__"]
