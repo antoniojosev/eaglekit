@@ -2005,18 +2005,14 @@ def add(
         console.print(f"   [cyan]cd ${var_name}[/]")
         console.print("")
         console.print(f"[dim]Or reload now: source {rc_file}[/]")
+        console.print(f"[dim]Alternative: [bold]ek cd {proj_name}[/][/]")
     else:
         console.print("")
-        console.print(f"[bold yellow]🚀 Ready! Navigate with:[/]")
-        console.print(f"   [cyan]cd ${var_name}[/]")
-    
-    console.print(f"[dim]Alternative: [bold]ek cd {proj_name}[/][/]")
-    console.print("")
-    console.print(f"[bold yellow]� Navigation Ready![/]")
-    console.print(f"[green]1.[/] Load variables: [cyan]source ~/.eagle_projects[/]")
-    console.print(f"[green]2.[/] Navigate:      [cyan]cd ${var_name}[/]")
-    console.print("")
-    console.print(f"[dim]Alternative: [bold]ek cd {proj_name}[/][/]")
+        console.print(f"[bold yellow]💡 To use project variables:[/]")
+        console.print(f"[green]1.[/] Load variables: [cyan]source ~/.eagle_projects[/]")
+        console.print(f"[green]2.[/] Navigate:      [cyan]cd ${var_name}[/]")
+        console.print("")
+        console.print(f"[dim]Alternative: [bold]ek cd {proj_name}[/][/]")
 
 @app.command("list")
 def list_projects():
