@@ -4,6 +4,7 @@ import json
 import logging
 from pathlib import Path
 import subprocess
+import logging
 import typer
 from rich.table import Table
 from rich.console import Console
@@ -53,8 +54,14 @@ _loaded_plugins = []
 _failed_plugins = []
 
 def _load_plugins():
-    """Load plugins from entry points"""
+    """Load plugins from entry points with detailed logging and validation."""
     global _loaded_plugins, _failed_plugins
+
+    # Clear previous state to avoid accumulation
+    _loaded_plugins.clear()
+    _failed_plugins.clear()
+    logger.debug("Plugin loading started")
+
     try:
         from importlib.metadata import entry_points
         eps = entry_points()
@@ -64,30 +71,64 @@ def _load_plugins():
         else:
             # Python 3.9
             plugin_eps = eps.get('eaglekit.plugins', [])
-        
-        for ep in plugin_eps:
+
+        plugin_eps_list = list(plugin_eps)
+        logger.info(f"Found {len(plugin_eps_list)} plugin(s) in entry points")
+
+        for ep in plugin_eps_list:
             try:
+                logger.debug(f"Loading plugin: {ep.name} from {ep.value}")
                 register_func = ep.load()
+
+                # Validate that the loaded module has a callable register function
+                if not callable(register_func):
+                    raise TypeError(f"Plugin '{ep.name}' entry point is not callable (expected a register function)")
+
+                # Call the register function to add plugin commands to the app
                 register_func(app)
+
                 _loaded_plugins.append({
                     'name': ep.name,
                     'module': ep.value,
                     'status': 'loaded'
                 })
+                logger.info(f"Successfully loaded plugin: {ep.name}")
                 console.print(f"[dim]Loaded plugin: {ep.name}[/]")
-            except Exception as e:
+
+            except TypeError as e:
+                # Plugin doesn't have proper register function
+                error_msg = str(e)
                 _failed_plugins.append({
                     'name': ep.name,
                     'module': ep.value,
                     'status': 'failed',
-                    'error': str(e)
+                    'error': error_msg
                 })
-                console.print(f"[yellow]Warning: Failed to load plugin {ep.name}: {e}[/]")
+                logger.warning(f"Plugin {ep.name} validation failed: {error_msg}")
+                console.print(f"[yellow]Warning: Plugin {ep.name} has invalid entry point: {error_msg}[/]")
+
+            except Exception as e:
+                # General plugin loading failure
+                error_msg = str(e)
+                _failed_plugins.append({
+                    'name': ep.name,
+                    'module': ep.value,
+                    'status': 'failed',
+                    'error': error_msg
+                })
+                logger.error(f"Failed to load plugin {ep.name}: {error_msg}", exc_info=True)
+                console.print(f"[yellow]Warning: Failed to load plugin {ep.name}: {error_msg}[/]")
+
     except ImportError:
         # No importlib.metadata available
+        logger.warning("importlib.metadata not available, plugin system disabled")
         pass
     except Exception as e:
-        console.print(f"[yellow]Warning: Plugin loading failed: {e}[/]")
+        error_msg = str(e)
+        logger.error(f"Plugin system initialization failed: {error_msg}", exc_info=True)
+        console.print(f"[yellow]Warning: Plugin loading failed: {error_msg}[/]")
+
+    logger.info(f"Plugin loading completed: {len(_loaded_plugins)} loaded, {len(_failed_plugins)} failed")
 
 def _get_available_plugins():
     """Get all available plugins (loaded and failed)"""
@@ -107,6 +148,12 @@ def _get_available_plugins():
     except Exception as e:
         logger.warning(f"Could not retrieve plugin list: {e}")
         return []
+
+# Configure basic logging (will be enhanced in PR #6)
+logging.basicConfig(
+    level=logging.WARNING,  # Only show warnings and errors by default
+    format='%(levelname)s: %(message)s'
+)
 
 # Load plugins on import
 _load_plugins()
