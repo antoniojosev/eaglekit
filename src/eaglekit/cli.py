@@ -47,6 +47,7 @@ For command-specific help: ek COMMAND --help
     rich_markup_mode="rich"
 )
 console = Console()
+_err_console = Console(stderr=True)
 logger = logging.getLogger(__name__)
 
 # ---------- Plugin system ----------
@@ -93,7 +94,7 @@ def _load_plugins():
                     'status': 'loaded'
                 })
                 logger.info(f"Successfully loaded plugin: {ep.name}")
-                console.print(f"[dim]Loaded plugin: {ep.name}[/]")
+                _err_console.print(f"[dim]Loaded plugin: {ep.name}[/]")
 
             except TypeError as e:
                 # Plugin doesn't have proper register function
@@ -105,7 +106,7 @@ def _load_plugins():
                     'error': error_msg
                 })
                 logger.warning(f"Plugin {ep.name} validation failed: {error_msg}")
-                console.print(f"[yellow]Warning: Plugin {ep.name} has invalid entry point: {error_msg}[/]")
+                _err_console.print(f"[yellow]Warning: Plugin {ep.name} has invalid entry point: {error_msg}[/]")
 
             except Exception as e:
                 # General plugin loading failure
@@ -117,7 +118,7 @@ def _load_plugins():
                     'error': error_msg
                 })
                 logger.error(f"Failed to load plugin {ep.name}: {error_msg}", exc_info=True)
-                console.print(f"[yellow]Warning: Failed to load plugin {ep.name}: {error_msg}[/]")
+                _err_console.print(f"[yellow]Warning: Failed to load plugin {ep.name}: {error_msg}[/]")
 
     except ImportError:
         # No importlib.metadata available
@@ -126,7 +127,7 @@ def _load_plugins():
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Plugin system initialization failed: {error_msg}", exc_info=True)
-        console.print(f"[yellow]Warning: Plugin loading failed: {error_msg}[/]")
+        _err_console.print(f"[yellow]Warning: Plugin loading failed: {error_msg}[/]")
 
     logger.info(f"Plugin loading completed: {len(_loaded_plugins)} loaded, {len(_failed_plugins)} failed")
 
