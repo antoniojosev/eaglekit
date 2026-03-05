@@ -4,7 +4,6 @@ import json
 import logging
 from pathlib import Path
 import subprocess
-import logging
 import typer
 from rich.table import Table
 from rich.console import Console
