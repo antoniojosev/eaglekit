@@ -29,7 +29,8 @@ Whether you're juggling microservices, managing complex Git workflows, or just w
 
 ### 🔌 **Plugin System**
 - **Auto-discovery** via Python entry points
-- **Dynamic loading** - plugins extend the `ek` command namespace
+- **Dynamic loading** with validation — plugins must expose a callable `register` function
+- **Detailed logging** — plugin load successes, failures, and diagnostics via `logging`
 - **Isolated architecture** - plugins don't interfere with each other
 - **First-class integration** - plugins feel native to the CLI
 
@@ -49,7 +50,7 @@ Whether you're juggling microservices, managing complex Git workflows, or just w
 - **Safe Git operations** through a tested service layer
 - **Multiple ignore strategies** (local, repo, global) for `.eagle/` directories
 - **Hook support** for extending Git behavior
-- **Commit tracking** and branch mirroring via plugins
+- **Commit tracking and branch mirroring** via the Flow plugin (`ek flow`)
 
 ### 🎨 **Developer Experience**
 - **Rich terminal output** with colors and formatting
@@ -81,7 +82,7 @@ cd eaglekit
 pip install -e .
 ```
 
-> **Note**: Installing any EagleKit plugin (like `eaglekit-plugin-mirror`) will automatically install the core framework if not already present.
+> **Note**: Installing any EagleKit plugin (like `eaglekit-plugin-flow`) will automatically install the core framework if not already present.
 
 ---
 
@@ -160,35 +161,56 @@ EagleKit's true power comes from its plugin architecture. Plugins extend the `ek
 
 ### Available Plugins
 
-#### 🪞 **Mirror Plugin** (`eaglekit-plugin-mirror`)
-Dual-environment branch workflow automation for QA/Prod scenarios.
+#### 🔀 **Flow Plugin** (`eaglekit-plugin-flow`)
+Unified commit tracking and branch mirroring with SQLite-backed storage. Combines sequential commit indexing with dual-environment (QA/Prod) branch workflows.
 
 ```bash
-pip install eaglekit-plugin-mirror
+pip install eaglekit-plugin-flow
 
-# Usage
-ek mirror create qa-mirror
-ek mirror link feature-branch
-ek mirror push
-```
+# Initialize in a repository
+ek flow init
 
-#### 📊 **Commit Tracker** (`eaglekit-plugin-commit-tracker`)
-Sequential commit indexing with UUID-based cross-branch synchronization.
+# Create a mirrored branch pair (e.g. auth-qa + auth-prod)
+ek flow create auth
 
-```bash
-pip install eaglekit-plugin-commit-tracker
+# Link current branch to a mirror target
+ek flow link <target-branch>
 
-# Usage
-ek tracker init
+# Push/pull commits between linked branches
+ek flow push
+ek flow pull
+
+# Switch between linked branches
+ek flow switch
+ek flow sw              # shorthand
+
+# View status and commit log
+ek flow status
+ek flow status --all    # all linked pairs
+ek flow log
+ek flow log -n 10       # limit results
+
+# Manage links
+ek flow links           # list all links
+ek flow unlink          # remove current link
+
+# Configuration
+ek flow config show
+ek flow config set qa_suffix -qa
+ek flow config share    # export config for team
+ek flow config unshare
+
+# Rebuild tracking database from git history
+ek flow rebuild
 ```
 
 ### Installing Plugins
 
 ```bash
 # Install via pip/pipx
-pipx inject eaglekit eaglekit-plugin-mirror
+pipx inject eaglekit eaglekit-plugin-flow
 # or
-pip install eaglekit-plugin-mirror
+pip install eaglekit-plugin-flow
 
 # Verify installation
 ek plugins
@@ -539,8 +561,7 @@ Please feel free to open issues or submit pull requests.
 
 | Plugin | Description | Status |
 |--------|-------------|--------|
-| [eaglekit-plugin-mirror](https://github.com/youruser/eaglekit-plugin-mirror) | Dual-environment branch workflows | ✅ Stable |
-| [eaglekit-plugin-commit-tracker](https://github.com/youruser/eaglekit-plugin-commit-tracker) | Sequential commit indexing | ✅ Stable |
+| eaglekit-plugin-flow | Commit tracking and branch mirroring (SQLite) | ✅ Stable |
 
 ### Community Plugins
 
